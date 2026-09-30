@@ -1,0 +1,3 @@
+[submodule "upstream/phaser"]
+	path = upstream/phaser
+	url = https://github.com/pillarex/funtico-sdk-phaser.git

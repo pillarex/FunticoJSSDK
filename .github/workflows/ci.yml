@@ -1,0 +1,43 @@
+name: CI
+
+# dist/ is generated from the upstream/phaser submodule. This job proves on every push that the
+# committed dist/ is exactly what the pinned Phaser SDK commit produces (npm run verify) and that the
+# generated code behaves like the TypeScript source (npm test).
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify-and-test:
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+      # Byte-exact check: fails if dist/ is stale or was edited by hand.
+      - run: npm run verify
+      - run: npm test

@@ -1,0 +1,44 @@
+{
+  "name": "funtico-sdk-js",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Funtico JS SDK - framework-agnostic build of the Funtico Phaser SDK for plain JavaScript (browser, Telegram Mini Apps, Node). Generated from the funtico-sdk-phaser submodule (upstream/phaser).",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pillarex/FunticoJSSDK.git"
+  },
+  "homepage": "https://github.com/pillarex/FunticoJSSDK#readme",
+  "bugs": {
+    "url": "https://github.com/pillarex/FunticoJSSDK/issues"
+  },
+  "main": "dist/funtico-sdk.js",
+  "module": "dist/funtico-sdk.mjs",
+  "types": "dist/funtico-sdk.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/funtico-sdk.d.mts",
+        "default": "./dist/funtico-sdk.mjs"
+      },
+      "require": {
+        "types": "./dist/funtico-sdk.d.ts",
+        "default": "./dist/funtico-sdk.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "USAGE.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build/build.mjs",
+    "verify": "node build/build.mjs --check",
+    "test": "node build/test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3"
+  }
+}
