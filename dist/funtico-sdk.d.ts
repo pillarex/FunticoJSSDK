@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 2ecbb3e7ea99) + src/FunticoClient.ts (sha256 0883e1f8ab7b).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 c7bf79316029) + src/FunticoClient.ts (sha256 0883e1f8ab7b).
  * Regenerate with: npm run build
  */
 /**
@@ -834,6 +834,7 @@ export declare class FunticoSDK {
     private activeClientSessionId;
     private currentClientSessionId;
     private currentClientSessionEvents;
+    private currentClientSessionCollected;
     private activeCampaignAttempt;
     private activeServerSessionId;
     private activeServerSessionEvents;
@@ -1233,6 +1234,19 @@ export declare class FunticoSDK {
     CloseCurrentSession_Client(): void;
     RecordEvent_Client(eventInfo: string): void;
     GetCurrentSessionEvents_Client(): string[];
+    /**
+     * Counts an item the player collected during the current run, such as a chest. The counts are
+     * sent with the result by EndRoomSP and ResultTournament_Client, also when the run was lost.
+     *
+     * @param key The reward key agreed for your game, for example "chest_1".
+     * @param count How many to add. Use it to re-record what a resumed run had collected.
+     */
+    RecordCollected_Client(key: string, count?: number): void;
+    /**
+     * Returns a copy of what the current run has collected so far, by reward key.
+     */
+    GetCurrentSessionCollected_Client(): Record<string, number>;
+    private getCollectedPayload;
     /**
      * Registers a new multiplayer session on the API from a Dedicated Game Server.
      */

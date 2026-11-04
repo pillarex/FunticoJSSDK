@@ -324,6 +324,15 @@ export const SCENARIOS = [
       await ctx.call('EndRoomSP', ROOM_A.id, 'sess-0003', 10, USER_ID);
       ctx.check(/Padding is invalid/.test(ctx.lastError()?.message), 'server text in error');
       await ctx.call('GetCurrentSessionEvents_Client');
+
+      await ctx.call('RecordCollected_Client', 'chest_1');
+      await ctx.call('RecordCollected_Client', 'chest_1', 2);
+      await ctx.call('GetCurrentSessionCollected_Client');
+      await ctx.call('EndRoomSP', ROOM_A.id, 'sess-0004', 10, USER_ID);
+      await ctx.call('GetCurrentSessionCollected_Client');
+      ctx.route('POST /Rooms/end-room-sp', json({ Success: true }));
+      await ctx.call('EndRoomSP', ROOM_A.id, 'sess-0004', 10, USER_ID);
+      await ctx.call('GetCurrentSessionCollected_Client');
     },
   },
 

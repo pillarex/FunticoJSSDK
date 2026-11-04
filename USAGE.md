@@ -90,6 +90,8 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`UpdateSession_Client`](#updatesession_client)
    - [`CloseCurrentSession_Client`](#closecurrentsession_client)
    - [`RecordEvent_Client`](#recordevent_client)
+   - [`RecordCollected_Client`](#recordcollected_client)
+   - [`GetCurrentSessionCollected_Client`](#getcurrentsessioncollected_client)
    - [`GetCurrentSessionEvents_Client`](#getcurrentsessionevents_client)
 8. [Dedicated Server Methods](#dedicated-server-methods)
    - [`CreateSession_Server`](#createsession_server)
@@ -2955,6 +2957,46 @@ function onChestOpened(chestId) {
 - Synchronous and local — events are buffered in memory and only leave the client when a result is submitted (a match is finalised or a campaign level is completed).
 - The buffer is attached automatically as `GameEvents` when you call `ResultTournament_Client` or `CompleteCampaignLevel` (including `funtico.completeCampaignLevel`), and by `EndRoomSP` whenever you leave its `gameEvents` argument empty.
 - The buffer is reset by `CreateSession_Client`, `ReconnectToUnfinishedSession_Client`, and `CloseCurrentSession_Client`, and also by a **successful** `CompleteCampaignLevel` (whichever attempt it completed; the client session itself stays open). A failed campaign submission leaves the buffer as it was. A successful `ResultTournament_Client` or `EndRoomSP` clears it too, because both close the client session (`CloseCurrentSession_Client`).
+
+---
+
+### `RecordCollected_Client`
+
+Counts an item the player collected during the current run, such as a chest. The game only reports what was collected; what the player receives for it is set up on the platform.
+
+**Signature:**
+```ts
+RecordCollected_Client(key: string, count = 1): void
+```
+
+**Parameters:**
+- `key` - The reward key agreed for your game, for example `chest_1`. Other keys earn nothing.
+- `count` - How many to add. Default: `1`.
+
+**Usage:**
+```js
+function onChestCollected() {
+  sdk.RecordCollected_Client('chest_1');
+}
+```
+
+**Important Notes:**
+- Synchronous and local. The counts leave the client with the result of `EndRoomSP` or `ResultTournament_Client`, including when the run was lost (`isSuccess: false`).
+- Each key has a limit per run. Agree it together with the key, so that a normal run cannot exceed it.
+- `CreateSession_Client`, `ReconnectToUnfinishedSession_Client`, and `CloseCurrentSession_Client` reset the counts. To keep them across a reconnect, store them in your session state and record them again with `count` after resuming.
+- A failed `EndRoomSP` or `ResultTournament_Client` keeps the counts, so a retry still sends them. `CompletePractice` and `CompleteCampaignLevel` do not send them: do not record anything in those modes.
+- An invalid call (empty key, or a count that is not a positive integer) logs an error and is ignored.
+
+---
+
+### `GetCurrentSessionCollected_Client`
+
+Returns a copy of what the current run has collected so far, by reward key. Useful for a counter on the HUD or the results screen, and for saving the counts in your session state.
+
+**Signature:**
+```ts
+GetCurrentSessionCollected_Client(): Record<string, number>
+```
 
 ---
 

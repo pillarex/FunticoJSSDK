@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 2ecbb3e7ea99) + src/FunticoClient.ts (sha256 0883e1f8ab7b).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 c7bf79316029) + src/FunticoClient.ts (sha256 0883e1f8ab7b).
  * Regenerate with: npm run build
  */
 (function (root, factory) {
@@ -328,6 +328,7 @@ class FunticoSDK {
         this.activeClientSessionId = null; // Stored eventId
         this.currentClientSessionId = null; // Stored saveSessionId
         this.currentClientSessionEvents = [];
+        this.currentClientSessionCollected = new Map();
         // Campaign attempt tracking (client-side only; set by StartCampaignLevel)
         this.activeCampaignAttempt = null;
         // Dedicated server session tracking
@@ -1116,7 +1117,8 @@ class FunticoSDK {
             Score: Math.trunc(score),
             UserId: userId,
             Ip: ip,
-            GameEvents: gameEvents.length > 0 ? gameEvents : this.currentClientSessionEvents
+            GameEvents: gameEvents.length > 0 ? gameEvents : this.currentClientSessionEvents,
+            ...this.getCollectedPayload()
         };
         const plainText = JSON.stringify(scorePayload);
         const encryptionKey = sessionOrMatchId.substring(0, 8) + this.config.privateGameKey.substring(0, 8);
@@ -1321,7 +1323,8 @@ class FunticoSDK {
             Score: Math.trunc(score),
             IsSuccess: isSuccess,
             CustomData: customData,
-            GameEvents: this.currentClientSessionEvents
+            GameEvents: this.currentClientSessionEvents,
+            ...this.getCollectedPayload()
         };
         const plainText = JSON.stringify(scorePayload);
         // Encryption key derived from saveScoreId and privateGameKey
@@ -1788,9 +1791,13 @@ class FunticoSDK {
         this.activeClientSessionId = data.SessionId;
         this.currentClientSessionId = data.SaveSessionId;
         this.currentClientSessionEvents = []; // clean logs to record new events during resume
+        this.currentClientSessionCollected.clear();
         return decryptedState;
     }
     async CreateSession_Client(json, gameType, eventId, saveSessionId) {
+        // Before the first await: the run is already live, and a pickup must not be wiped when the
+        // request returns.
+        this.currentClientSessionCollected.clear();
         // Encrypt custom data before storing
         const encryptionKey = this.getSessionEncryptionKey();
         const encryptedData = await CryptoHelper.encrypt(json, encryptionKey);
@@ -1844,6 +1851,7 @@ class FunticoSDK {
         this.activeClientSessionDbId = null;
         this.activeClientSessionId = null;
         this.currentClientSessionId = null;
+        this.currentClientSessionCollected.clear();
         this.currentClientSessionEvents = [];
     }
     RecordEvent_Client(eventInfo) {
@@ -1851,6 +1859,37 @@ class FunticoSDK {
     }
     GetCurrentSessionEvents_Client() {
         return [...this.currentClientSessionEvents];
+    }
+    /**
+     * Counts an item the player collected during the current run, such as a chest. The counts are
+     * sent with the result by EndRoomSP and ResultTournament_Client, also when the run was lost.
+     *
+     * @param key The reward key agreed for your game, for example "chest_1".
+     * @param count How many to add. Use it to re-record what a resumed run had collected.
+     */
+    RecordCollected_Client(key, count = 1) {
+        if (!key || !Number.isInteger(count) || count <= 0) {
+            console.error(`RecordCollected_Client ignored an invalid call: key "${key}", count ${count}.`);
+            return;
+        }
+        this.currentClientSessionCollected.set(key, (this.currentClientSessionCollected.get(key) ?? 0) + count);
+    }
+    /**
+     * Returns a copy of what the current run has collected so far, by reward key.
+     */
+    GetCurrentSessionCollected_Client() {
+        const collected = {};
+        this.currentClientSessionCollected.forEach((count, key) => {
+            collected[key] = count;
+        });
+        return collected;
+    }
+    // Absent rather than empty when nothing was collected, so the payload of a game that does not
+    // use this stays exactly as it was.
+    getCollectedPayload() {
+        return this.currentClientSessionCollected.size > 0
+            ? { Collected: this.GetCurrentSessionCollected_Client() }
+            : {};
     }
     /* ================= Dedicated Server Session Methods =================
      *
