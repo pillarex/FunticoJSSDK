@@ -331,6 +331,77 @@ export const INVENTORY_ALL = {
   ],
 };
 
+// ---- ghost matchmaking (PascalCase) -----------------------------------------------------------
+
+export const GHOST_MATCH_ID = '7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
+
+/** GET /Ghost/pools: a run pool with a bound attribute, and a free pool whose Attributes came back null. */
+export const GHOST_POOLS = {
+  Pools: [
+    {
+      Key: 'arena', Name: 'Arena', Partition: 's1', HasRun: true, MaxWins: 10, MaxLosses: 3, MaxRounds: null, Rating: 1000,
+      Attributes: [
+        { Name: 'Round', Min: 1, Max: 13, Exact: true, Bind: 'Run.Round' },
+        { Name: 'ShipSize', Min: 1, Max: 5, Exact: false, Bind: null },
+      ],
+    },
+    { Key: 'duel', Name: 'Duel', Partition: 's1', HasRun: false, MaxWins: null, MaxLosses: null, MaxRounds: null, Rating: 1016, Attributes: null },
+  ],
+};
+
+export function ghostRun(overrides = {}) {
+  return {
+    RunId: 'a1b2c3d4-0000-4000-8000-000000000001', Pool: 'arena', Partition: 's1', Status: 'Active',
+    Round: 1, Fights: 0, Wins: 0, Losses: 0, Draws: 0, MaxWins: 10, MaxLosses: 3, MaxRounds: null,
+    StartedAt: '2026-11-15T10:00:00Z', FinishedAt: null, ...overrides,
+  };
+}
+
+export const GHOST_MATCH = {
+  MatchId: GHOST_MATCH_ID, SnapshotId: 'b2c3d4e5-0000-4000-8000-000000000002',
+  SnapshotJson: '{"v":1,"modules":["laser","shield"]}',
+  SnapshotSha256: 'c1f1b4ce2d2c4f3a8b1e0d9c7a6b5e4f3d2c1b0a9e8d7c6b5a4f3e2d1c0b9a8f',
+  IsBot: false, OwnerName: 'Rival', OwnerAvatarUrl: 'https://cdn.example/rival.png', OwnerBorderUrl: null,
+  OwnerRating: 1008, PlayerRating: 1000, OpponentAttributes: { Round: 1, ShipSize: 3 }, Step: 'Close',
+  ExpiresAt: '2026-11-15T10:15:00Z',
+};
+
+export const GHOST_REPORT = {
+  MatchId: GHOST_MATCH_ID, Outcome: 'Win', PlayerRatingBefore: 1000, PlayerRatingAfter: 1016,
+  OpponentRatingBefore: 1008, OpponentRatingAfter: 1000, Run: ghostRun({ Round: 2, Fights: 1, Wins: 1 }),
+};
+
+export const GHOST_SUMMARY = {
+  Pool: 'arena', Partition: 's1', Rating: 1016, NewGhostWins: 2, NewGhostLosses: 1, NewGhostDraws: 0,
+  GhostWins: 5, GhostLosses: 4, GhostDraws: 1,
+};
+
+export const GHOST_HISTORY = {
+  Items: [
+    {
+      MatchId: GHOST_MATCH_ID, Role: 'Attacker', Outcome: 'Win', Expired: false, OpponentName: 'Rival', OpponentAvatarUrl: null,
+      OpponentIsBot: false, RatingBefore: 1000, RatingAfter: 1016, Partition: 's1', CreatedAt: '2026-11-15T10:00:00Z', ClosedAt: '2026-11-15T10:03:00Z',
+    },
+    {
+      MatchId: 'c3d4e5f6-0000-4000-8000-000000000003', Role: 'Defender', Outcome: null, Expired: true, OpponentName: null, OpponentAvatarUrl: null,
+      OpponentIsBot: false, RatingBefore: 1016, RatingAfter: 1016, Partition: 's1', CreatedAt: '2026-11-15T09:00:00Z', ClosedAt: null,
+    },
+  ],
+  Page: 1, Limit: 20, HasMore: false,
+};
+
+const ghostEntry = (Place, Name, Rating, IsMe = false) => ({
+  Place, Name, AvatarUrl: null, Rating, Wins: 3, Losses: 1, Draws: 0, GhostWins: 2, GhostLosses: 2, GhostDraws: 0, IsMe,
+});
+
+/** GET /Ghost/leaderboard: page 1 of 2 with the player ranked off-page. */
+export const GHOST_LEADERBOARD = {
+  Pool: 'arena', Partition: 's1',
+  Items: [ghostEntry(1, 'Rival', 1088), ghostEntry(2, null, 1040)],
+  Me: ghostEntry(7, 'Tester', 1016, true),
+  Page: 1, Limit: 2, HasMore: true,
+};
+
 const STAR_RULES = JSON.stringify({
   Win: [{ Metric: 'score', Op: '>=', Value: 100 }],
   Stars: [
@@ -470,6 +541,21 @@ export function defaultRoutes() {
     'POST /Campaign/complete-level': json(CAMPAIGN_COMPLETION),
 
     'GET /Inventory': req => json(req.url.searchParams.get('all') === 'true' ? INVENTORY_ALL : INVENTORY_GAME),
+
+    'GET /Ghost/pools': json(GHOST_POOLS),
+    'GET /Ghost/run': json({ Run: ghostRun(), OpenMatch: { ...GHOST_MATCH, OpponentAttributes: null } }),
+    'POST /Ghost/run/start': json({ Run: ghostRun(), OpenMatch: null }),
+    'POST /Ghost/run/abandon': json({ Run: ghostRun({ Status: 'Abandoned', FinishedAt: '2026-11-15T10:20:00Z' }), OpenMatch: null }),
+    'POST /Ghost/find': req => json({
+      Match: GHOST_MATCH,
+      Run: req.json.Pool === 'arena' ? ghostRun() : null,
+      UploadedSnapshotId: req.json.Snapshot ? 'd4e5f6a7-0000-4000-8000-000000000004' : null,
+    }),
+    'POST /Ghost/upload': json({ SnapshotId: 'd4e5f6a7-0000-4000-8000-000000000004', Sha256: 'ab'.repeat(32), Partition: 's1' }),
+    'POST /Ghost/report': json(GHOST_REPORT),
+    'GET /Ghost/report-summary': json(GHOST_SUMMARY),
+    'GET /Ghost/history': json(GHOST_HISTORY),
+    'GET /Ghost/leaderboard': json(GHOST_LEADERBOARD),
 
     'GET /Session/any-unfinished-sessions': json({ SavedSessions: [SAVED_SESSION] }),
     'GET /Session/reconnect-to-session': json(SAVED_SESSION),

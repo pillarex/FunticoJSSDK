@@ -8,7 +8,7 @@ import { importEsm, requireUmd } from './helpers/paths.mjs';
 import {
   serverEncrypt, serverDecrypt, serverHmac, serverKey, payloadAesKey, payloadHmacKey, sessionKey,
 } from './helpers/crypto-oracle.mjs';
-import { defaultRoutes, config, PUB, PRIV, PLATFORM_TOKEN, USER_ID, ROOM_A, TOURNAMENT_ID } from './fixtures/wire.mjs';
+import { defaultRoutes, config, PUB, PRIV, PLATFORM_TOKEN, USER_ID, ROOM_A, TOURNAMENT_ID, GHOST_MATCH_ID } from './fixtures/wire.mjs';
 
 const builds = [
   { name: 'esm', mod: await importEsm() },
@@ -78,6 +78,7 @@ for (const { name, mod } of builds) {
       const attempt = await ctx.sdk.StartCampaignLevel('level-0002');
       await ctx.sdk.CompleteCampaignLevel({ score: 1234.5, perfect: true, missed: false });
       ctx.state.attempt = attempt;
+      await ctx.sdk.ReportGhostResult(GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Draw, 'fight-hash-01');
       await ctx.sdk.CreateSession_Client('{"level":1,"hp":50}', mod.GameTypeEnum.Rooms, eventId, sessionId);
       await ctx.sdk.ResultTournament_Server(TOURNAMENT_ID, saveScoreId, 5000, 1058, true);
     }, { routes: defaultRoutes() });
@@ -104,6 +105,13 @@ for (const { name, mod } of builds) {
     assert.deepEqual(JSON.parse(serverDecrypt(done.EncryptedData, payloadAesKey(attemptId, PRIV))),
       { AttemptId: attemptId, LevelId: 'level-0002', Metrics: { score: 1234.5, perfect: 1, missed: 0 }, GameEvents: [] });
     assert.equal(done.Hash, serverHmac(done.EncryptedData, payloadHmacKey(PRIV)));
+
+    // ReportGhostResult: payload keyed on the (lowercased) match id, which also travels in the clear.
+    const ghost = JSON.parse(find('/Ghost/report').body);
+    assert.equal(ghost.MatchId, GHOST_MATCH_ID);
+    assert.deepEqual(JSON.parse(serverDecrypt(ghost.EncryptedData, payloadAesKey(GHOST_MATCH_ID, PRIV))),
+      { MatchId: GHOST_MATCH_ID, Outcome: 'Draw', FightHash: 'fight-hash-01' });
+    assert.equal(ghost.Hash, serverHmac(ghost.EncryptedData, payloadHmacKey(PRIV)));
 
     // Saved session: Data and Hash of the created session.
     const saved = JSON.parse(find('/Session/create-session').body);

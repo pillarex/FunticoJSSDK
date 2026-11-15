@@ -10,7 +10,7 @@ import { serverEncrypt } from '../helpers/crypto-oracle.mjs';
 import {
   PUB, PRIV, API, PLATFORM_TOKEN, JWT, USER_ID, PLATFORM_ID, RIVAL_ID, config,
   BALANCE, ROOM_A, ROOM_B, ROOM_C, ROOM_D, VOUCHERS, VOUCHERS_SPENT, LEADERS, TOURNAMENT_ID, TOURNAMENT_LEADERBOARD, TOURNAMENT_HISTORY,
-  CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession,
+  CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession, GHOST_MATCH_ID,
 } from './wire.mjs';
 
 const tokenConfig = (mod, extra) => config(mod, { userToken: PLATFORM_TOKEN, ...extra });
@@ -747,6 +747,98 @@ export const SCENARIOS = [
       }
       ctx.route('GET /Inventory', json({}));
       ctx.check((await ctx.call('GetInventory', false)).Items.length === 0, 'missing Items becomes []');
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
+    name: 'Ghost matchmaking: pools, run lifecycle, find/upload, signed report, summary, history, error codes',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', tokenConfig(mod));
+
+      const pools = await ctx.call('GetGhostPools');
+      ctx.check(pools.length === 2 && pools[0].Attributes[0].Bind === 'Run.Round', 'pools mapped');
+      ctx.check(Array.isArray(pools[1].Attributes) && pools[1].Attributes.length === 0, 'null Attributes becomes []');
+
+      const state = await ctx.call('GetGhostRun', 'arena');
+      ctx.check(lastRequest(ctx).url.endsWith('/Ghost/run?pool=arena'), 'run url');
+      ctx.check(state.Run.Round === 1 && state.OpenMatch.MatchId === GHOST_MATCH_ID, 'run state mapped');
+      ctx.check(Object.keys(state.OpenMatch.OpponentAttributes).length === 0, 'null OpponentAttributes becomes {}');
+      await ctx.call('StartGhostRun', 'arena');
+      ctx.check(lastRequest(ctx).method === 'POST' && lastRequest(ctx).url.endsWith('/Ghost/run/start?pool=arena'), 'start url');
+      await ctx.call('GetGhostRun', 'pool with spaces & more');
+      ctx.check(lastRequest(ctx).url.endsWith('?pool=pool%20with%20spaces%20%26%20more'), 'pool key encoded');
+
+      const found = await ctx.call('FindGhostOpponent', 'arena', { ShipSize: 3 }, { snapshot: '{"v":1}', exclude: ['b2c3d4e5-0000-4000-8000-000000000002'] });
+      ctx.check(lastBody(ctx).Snapshot === '{"v":1}' && lastBody(ctx).AllowBots === true && lastBody(ctx).Exclude.length === 1, 'find body');
+      ctx.check(found.Match.OpponentAttributes.ShipSize === 3 && found.UploadedSnapshotId !== null && found.Run.Round === 1, 'find mapped');
+      const free = await ctx.call('FindGhostOpponent', 'duel', { ShipSize: 2 });
+      ctx.check(lastBody(ctx).Snapshot === null && lastBody(ctx).Exclude.length === 0, 'find defaults');
+      ctx.check(free.Run === null && free.UploadedSnapshotId === null, 'free pool: no run, nothing uploaded');
+      await ctx.call('FindGhostOpponent', 'duel', { ShipSize: 2 }, { allowBots: false });
+      ctx.check(lastBody(ctx).AllowBots === false, 'bots forbidden');
+
+      ctx.check((await ctx.call('UploadGhostSnapshot', 'arena', { ShipSize: 3 }, '{"v":1}')).Partition === 's1', 'upload mapped');
+
+      const report = await ctx.call('ReportGhostResult', found.Match.MatchId, mod.GhostOutcome.Win, 'fight-hash-01');
+      ctx.check(lastBody(ctx).MatchId === GHOST_MATCH_ID && /^[0-9a-f]{64}$/.test(lastBody(ctx).Hash), 'report envelope');
+      ctx.check(report.PlayerRatingAfter === 1016 && report.Run.Wins === 1, 'report mapped');
+      await ctx.call('ReportGhostResult', GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Draw);
+      ctx.check(lastBody(ctx).MatchId === GHOST_MATCH_ID, 'match id lowercased');
+      const before = ctx.requests.length;
+      await ctx.call('ReportGhostResult', GHOST_MATCH_ID, 'Victory');
+      ctx.check(ctx.lastError()?.code === mod.GhostErrorCode.InvalidOutcome, 'outcome validated');
+      ctx.expectRequests(before, 'invalid outcome makes no request');
+
+      ctx.check((await ctx.call('GetGhostReportSummary', 'arena')).NewGhostWins === 2, 'summary mapped');
+      const history = await ctx.call('GetGhostHistory', 'arena');
+      ctx.check(lastRequest(ctx).url.endsWith('/Ghost/history?pool=arena&page=1&limit=20'), 'history defaults');
+      ctx.check(history.Items[1].Outcome === null && history.Items[1].Expired === true, 'history mapped');
+      await ctx.call('GetGhostHistory', 'arena', 3, 5);
+      ctx.check(lastRequest(ctx).url.endsWith('&page=3&limit=5'), 'history paging');
+
+      const board = await ctx.call('GetGhostLeaderboard', 'arena');
+      ctx.check(lastRequest(ctx).url.endsWith('/Ghost/leaderboard?pool=arena&page=1&limit=20'), 'leaderboard defaults, no partition');
+      ctx.check(board.Items.length === 2 && board.Items[1].Name === null && board.Me.Place === 7 && board.Me.IsMe && board.HasMore, 'leaderboard mapped');
+      await ctx.call('GetGhostLeaderboard', 'arena', 2, 50, 's 1');
+      ctx.check(lastRequest(ctx).url.endsWith('&page=2&limit=50&partition=s%201'), 'past season requested');
+
+      const abandoned = await ctx.call('AbandonGhostRun', 'arena');
+      ctx.check(abandoned.Run.Status === 'Abandoned' && abandoned.OpenMatch === null, 'abandon mapped');
+
+      const failures = [
+        ['POST /Ghost/find', 'FindGhostOpponent', ['arena', {}], json({ Error: 'NoOpponent', Message: 'No opponent found.' }, 400)],
+        ['POST /Ghost/find', 'FindGhostOpponent', ['arena', { Round: 4 }], json({ Error: 'RunStateMismatch', Message: "'Round' is 2 on the server" }, 400)],
+        ['POST /Ghost/run/start', 'StartGhostRun', ['duel'], json({ Error: 'RunNotSupported', Message: 'No runs' }, 400)],
+        ['POST /Ghost/run/abandon', 'AbandonGhostRun', ['arena'], json({ Error: 'RunNotActive', Message: 'Nothing to abandon' }, 400)],
+        ['POST /Ghost/report', 'ReportGhostResult', [GHOST_MATCH_ID, mod.GhostOutcome.Loss], json({ Error: 'MatchExpired', Message: 'Expired' }, 400)],
+        ['POST /Ghost/upload', 'UploadGhostSnapshot', ['arena', {}, 'x'], json({ Error: 'InvalidSnapshot', Message: 'Not JSON' }, 400)],
+        ['GET /Ghost/pools', 'GetGhostPools', [], json({ Error: 'BrandNewCode', Message: 'Future' }, 400)],
+        ['GET /Ghost/report-summary', 'GetGhostReportSummary', ['nope'], json({ Error: 'PoolNotFound', Message: 'No pool' }, 400)],
+        ['GET /Ghost/history', 'GetGhostHistory', ['arena'], text('Bad Gateway', 502)],
+        ['GET /Ghost/run', 'GetGhostRun', ['arena'], text('', 401)],
+      ];
+      for (const [route, method, args, failure] of failures) {
+        ctx.route(route, failure);
+        await ctx.call(method, ...args);
+        ctx.check(ctx.lastError()?.isGhostError === true, `${method}: GhostError thrown`);
+      }
+      ctx.check(ctx.lastError()?.code === mod.GhostErrorCode.Unknown, 'no body -> Unknown');
+
+      ctx.route('GET /Ghost/pools', json({ Pools: null }));
+      ctx.check((await ctx.call('GetGhostPools')).length === 0, 'null Pools becomes []');
+      ctx.route('GET /Ghost/history', json({ Items: null, Page: 1, Limit: 20, HasMore: false }));
+      ctx.check((await ctx.call('GetGhostHistory', 'arena')).Items.length === 0, 'null Items becomes []');
+      ctx.route('GET /Ghost/leaderboard', json({ Pool: 'arena', Partition: 's2', Page: 1, Limit: 20, HasMore: false }));
+      const emptyBoard = await ctx.call('GetGhostLeaderboard', 'arena');
+      ctx.check(emptyBoard.Items.length === 0 && emptyBoard.Me === null, 'missing leaderboard Items/Me become []/null');
+      ctx.route('GET /Ghost/leaderboard', json({ Error: 'PoolNotFound', Message: 'No pool' }, 400));
+      await ctx.call('GetGhostLeaderboard', 'nope');
+      ctx.check(ctx.lastError()?.code === mod.GhostErrorCode.PoolNotFound, 'leaderboard error code');
+      ctx.route('GET /Ghost/run', json({}));
+      const empty = await ctx.call('GetGhostRun', 'arena');
+      ctx.check(empty.Run === null && empty.OpenMatch === null, 'missing run fields become null');
     },
   },
 

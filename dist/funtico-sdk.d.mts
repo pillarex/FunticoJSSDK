@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 42ee1a0c3bba) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 e847e4795cbf) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -857,6 +857,193 @@ export interface InventoryResponse {
     Items: InventoryItem[];
 }
 /**
+ * Machine-readable reasons a Ghost method can fail. Branch on these, never on message text.
+ * `NoOpponent` is a normal outcome: nobody matched and no bot was available - fall back to a
+ * local opponent or try again later.
+ */
+export declare enum GhostErrorCode {
+    PoolNotFound = "PoolNotFound",
+    RunNotSupported = "RunNotSupported",
+    RunNotActive = "RunNotActive",
+    RunStateMismatch = "RunStateMismatch",
+    InvalidAttributes = "InvalidAttributes",
+    InvalidSnapshot = "InvalidSnapshot",
+    NoOpponent = "NoOpponent",
+    MatchNotFound = "MatchNotFound",
+    MatchExpired = "MatchExpired",
+    InvalidSignature = "InvalidSignature",
+    InvalidOutcome = "InvalidOutcome",
+    /** The response carried no recognisable code. */
+    Unknown = "Unknown"
+}
+/** Error thrown by the Ghost methods, carrying a machine-readable Code. `instanceof GhostError` is reliable. */
+export declare class GhostError extends Error {
+    readonly Code: GhostErrorCode;
+    constructor(code: GhostErrorCode, message: string);
+}
+/** A fight's outcome, from the reporting player's point of view. */
+export declare enum GhostOutcome {
+    Win = "Win",
+    Loss = "Loss",
+    Draw = "Draw"
+}
+/** One attribute a pool matches on. `Bind` set means the server fills it from the run. */
+export interface GhostAttribute {
+    Name: string;
+    Min: number;
+    Max: number;
+    /** Matched exactly on every search step. */
+    Exact: boolean;
+    /** "Run.Round", "Run.Wins", "Run.Losses" or null. Bound attributes may be omitted when searching. */
+    Bind: string | null;
+}
+/** A ghost pool of this game and the player's rating in it. */
+export interface GhostPool {
+    Key: string;
+    Name: string;
+    /** The current season partition; ships and ratings never mix across partitions. */
+    Partition: string;
+    /** True when the pool plays runs: start, fight until a limit, finish. */
+    HasRun: boolean;
+    MaxWins: number | null;
+    MaxLosses: number | null;
+    MaxRounds: number | null;
+    Attributes: GhostAttribute[];
+    Rating: number;
+}
+/** The player's run in a pool. Round = Fights + 1. */
+export interface GhostRun {
+    RunId: string;
+    Pool: string;
+    Partition: string;
+    Status: 'Active' | 'Finished' | 'Abandoned';
+    Round: number;
+    Fights: number;
+    Wins: number;
+    Losses: number;
+    Draws: number;
+    MaxWins: number | null;
+    MaxLosses: number | null;
+    MaxRounds: number | null;
+    StartedAt: string;
+    FinishedAt: string | null;
+}
+/** An issued opponent. Report the fight with MatchId, once. */
+export interface GhostMatch {
+    MatchId: string;
+    SnapshotId: string;
+    /** The opponent's ship exactly as it was uploaded (your game's JSON, as a string). */
+    SnapshotJson: string;
+    /** Lowercase hex SHA-256 of the UTF-8 bytes of SnapshotJson. */
+    SnapshotSha256: string;
+    IsBot: boolean;
+    OwnerName: string | null;
+    OwnerAvatarUrl: string | null;
+    OwnerBorderUrl: string | null;
+    OwnerRating: number;
+    PlayerRating: number;
+    OpponentAttributes: Record<string, number>;
+    /** Name of the search step that found the opponent ("Fallback" for a fallback bot). */
+    Step: string;
+    ExpiresAt: string;
+}
+/** The player's active run and its open match: resume after a reload. */
+export interface GhostRunState {
+    Run: GhostRun | null;
+    OpenMatch: GhostMatch | null;
+}
+export interface GhostFindResult {
+    Match: GhostMatch;
+    /** The run after the search (null in pools without runs). */
+    Run: GhostRun | null;
+    /** Id of the player's ship stored by this search, when one was sent. */
+    UploadedSnapshotId: string | null;
+}
+export interface GhostFindOptions {
+    /** The player's own ship (your game's JSON as a string), stored in the pool in the same request. */
+    snapshot?: string;
+    /** Snapshot ids not to face (at most 20). */
+    exclude?: string[];
+    /** False forbids bots for this search. Default true. */
+    allowBots?: boolean;
+}
+export interface GhostUploadResult {
+    SnapshotId: string;
+    Sha256: string;
+    Partition: string;
+}
+export interface GhostReportResult {
+    MatchId: string;
+    Outcome: GhostOutcome;
+    PlayerRatingBefore: number;
+    PlayerRatingAfter: number;
+    OpponentRatingBefore: number;
+    OpponentRatingAfter: number;
+    /** The run after the fight (null in pools without runs). */
+    Run: GhostRun | null;
+}
+/** What the player's ghosts did since the previous call. */
+export interface GhostReportSummary {
+    Pool: string;
+    Partition: string;
+    Rating: number;
+    NewGhostWins: number;
+    NewGhostLosses: number;
+    NewGhostDraws: number;
+    GhostWins: number;
+    GhostLosses: number;
+    GhostDraws: number;
+}
+export interface GhostHistoryItem {
+    MatchId: string;
+    /** "Attacker": the player fought a ghost. "Defender": someone fought the player's ghost. */
+    Role: 'Attacker' | 'Defender';
+    /** From the player's point of view; null when the match expired without counting. */
+    Outcome: GhostOutcome | null;
+    Expired: boolean;
+    OpponentName: string | null;
+    OpponentAvatarUrl: string | null;
+    OpponentIsBot: boolean;
+    RatingBefore: number;
+    RatingAfter: number;
+    Partition: string;
+    CreatedAt: string;
+    ClosedAt: string | null;
+}
+export interface GhostHistory {
+    Items: GhostHistoryItem[];
+    Page: number;
+    Limit: number;
+    HasMore: boolean;
+}
+/** One ranked player of a pool's season. */
+export interface GhostLeaderboardEntry {
+    /** 1-based place: rating, then wins, high to low. */
+    Place: number;
+    Name: string | null;
+    AvatarUrl: string | null;
+    Rating: number;
+    /** The player's own fights. */
+    Wins: number;
+    Losses: number;
+    Draws: number;
+    /** Fights against the player's ghosts, from the ghost's side. */
+    GhostWins: number;
+    GhostLosses: number;
+    GhostDraws: number;
+    IsMe: boolean;
+}
+export interface GhostLeaderboard {
+    Pool: string;
+    Partition: string;
+    Items: GhostLeaderboardEntry[];
+    /** The player's own row and place, wherever it is; null until the player has fought this season. */
+    Me: GhostLeaderboardEntry | null;
+    Page: number;
+    Limit: number;
+    HasMore: boolean;
+}
+/**
  * Cryptography helper class leveraging the browser Web Crypto API.
  * Produces the encrypted payloads and signatures the Funtico API expects.
  */
@@ -1338,6 +1525,41 @@ export declare class FunticoSDK {
     GetInventoryItemProperties<T = unknown>(item: InventoryItem): T | null;
     private mapInventoryItem;
     private throwInventoryError;
+    /** The game's ghost pools, their attributes and the player's rating in each. */
+    GetGhostPools(): Promise<GhostPool[]>;
+    /** The player's active run in the pool and its open match, if any (resume after a reload). */
+    GetGhostRun(pool: string): Promise<GhostRunState>;
+    /** Starts a run in a pool with runs, or returns the active one. */
+    StartGhostRun(pool: string): Promise<GhostRunState>;
+    /** Gives up the active run. An open match counts as not reported (usually a loss). */
+    AbandonGhostRun(pool: string): Promise<GhostRunState>;
+    /**
+     * Finds an opponent. Pass the values of the pool's attributes (attributes bound to the run may
+     * be omitted: the server fills them) and, optionally, the player's own ship to store in the
+     * same request. Searching again before reporting returns the same match.
+     *
+     * Rejects with GhostError; `NoOpponent` is a normal outcome.
+     */
+    FindGhostOpponent(pool: string, attributes: Record<string, number>, options?: GhostFindOptions): Promise<GhostFindResult>;
+    /** Stores the player's ship (your game's JSON as a string) without searching. */
+    UploadGhostSnapshot(pool: string, attributes: Record<string, number>, snapshot: string): Promise<GhostUploadResult>;
+    /**
+     * Reports the fight of a match, once. A repeated report returns the first result. The result
+     * is encrypted and signed like a campaign completion.
+     */
+    ReportGhostResult(matchId: string, outcome: GhostOutcome, fightHash?: string | null): Promise<GhostReportResult>;
+    /** What the player's ghosts did since the previous call; the call resets the "New" counters. */
+    GetGhostReportSummary(pool: string): Promise<GhostReportSummary>;
+    /** The player's fights and the fights against the player's ghosts, newest first. */
+    GetGhostHistory(pool: string, page?: number, limit?: number): Promise<GhostHistory>;
+    /**
+     * Players of the pool's season ranked by rating, plus the player's own place. Only players who
+     * fought this season are ranked. Pass `partition` to read a past season.
+     */
+    GetGhostLeaderboard(pool: string, page?: number, limit?: number, partition?: string | null): Promise<GhostLeaderboard>;
+    private ghostRunCall;
+    private mapGhostMatch;
+    private throwGhostError;
     /**
      * Registers a new multiplayer session on the API from a Dedicated Game Server.
      */

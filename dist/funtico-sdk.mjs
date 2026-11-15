@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 42ee1a0c3bba) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 e847e4795cbf) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -254,6 +254,43 @@ export class InventoryError extends Error {
         this.Code = code;
     }
 }
+/**
+ * Machine-readable reasons a Ghost method can fail. Branch on these, never on message text.
+ * `NoOpponent` is a normal outcome: nobody matched and no bot was available - fall back to a
+ * local opponent or try again later.
+ */
+export var GhostErrorCode;
+(function (GhostErrorCode) {
+    GhostErrorCode["PoolNotFound"] = "PoolNotFound";
+    GhostErrorCode["RunNotSupported"] = "RunNotSupported";
+    GhostErrorCode["RunNotActive"] = "RunNotActive";
+    GhostErrorCode["RunStateMismatch"] = "RunStateMismatch";
+    GhostErrorCode["InvalidAttributes"] = "InvalidAttributes";
+    GhostErrorCode["InvalidSnapshot"] = "InvalidSnapshot";
+    GhostErrorCode["NoOpponent"] = "NoOpponent";
+    GhostErrorCode["MatchNotFound"] = "MatchNotFound";
+    GhostErrorCode["MatchExpired"] = "MatchExpired";
+    GhostErrorCode["InvalidSignature"] = "InvalidSignature";
+    GhostErrorCode["InvalidOutcome"] = "InvalidOutcome";
+    /** The response carried no recognisable code. */
+    GhostErrorCode["Unknown"] = "Unknown";
+})(GhostErrorCode || (GhostErrorCode = {}));
+/** Error thrown by the Ghost methods, carrying a machine-readable Code. `instanceof GhostError` is reliable. */
+export class GhostError extends Error {
+    constructor(code, message) {
+        super(message);
+        Object.setPrototypeOf(this, GhostError.prototype);
+        this.name = 'GhostError';
+        this.Code = code;
+    }
+}
+/** A fight's outcome, from the reporting player's point of view. */
+export var GhostOutcome;
+(function (GhostOutcome) {
+    GhostOutcome["Win"] = "Win";
+    GhostOutcome["Loss"] = "Loss";
+    GhostOutcome["Draw"] = "Draw";
+})(GhostOutcome || (GhostOutcome = {}));
 /**
  * Cryptography helper class leveraging the browser Web Crypto API.
  * Produces the encrypted payloads and signatures the Funtico API expects.
@@ -2013,6 +2050,169 @@ export class FunticoSDK {
             // Not a JSON body - keep the raw text under the Unknown code.
         }
         throw new InventoryError(code, `${fallback}: ${message}`);
+    }
+    /* ================= Ghost Matchmaking Methods =================
+     *
+     * Asynchronous PvP: the player fights a stored ship of another player (a "ghost") or a bot.
+     * The server decides the opponent, counts the run, keeps the ratings and accepts each fight's
+     * result once, by MatchId. Every rule (attributes, search steps, run limits, bots, rating) is
+     * configured per pool, so a game reads its pools instead of hardcoding them.
+     */
+    /** The game's ghost pools, their attributes and the player's rating in each. */
+    async GetGhostPools() {
+        const response = await fetch(`${this.apiUri}/Ghost/pools`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to fetch ghost pools");
+        const wire = await response.json();
+        return (wire.Pools ?? []).map(pool => ({ ...pool, Attributes: pool.Attributes ?? [] }));
+    }
+    /** The player's active run in the pool and its open match, if any (resume after a reload). */
+    async GetGhostRun(pool) {
+        return this.ghostRunCall('GET', 'run', pool, "Failed to fetch the ghost run");
+    }
+    /** Starts a run in a pool with runs, or returns the active one. */
+    async StartGhostRun(pool) {
+        return this.ghostRunCall('POST', 'run/start', pool, "Failed to start a ghost run");
+    }
+    /** Gives up the active run. An open match counts as not reported (usually a loss). */
+    async AbandonGhostRun(pool) {
+        return this.ghostRunCall('POST', 'run/abandon', pool, "Failed to abandon the ghost run");
+    }
+    /**
+     * Finds an opponent. Pass the values of the pool's attributes (attributes bound to the run may
+     * be omitted: the server fills them) and, optionally, the player's own ship to store in the
+     * same request. Searching again before reporting returns the same match.
+     *
+     * Rejects with GhostError; `NoOpponent` is a normal outcome.
+     */
+    async FindGhostOpponent(pool, attributes, options = {}) {
+        const response = await fetch(`${this.apiUri}/Ghost/find`, {
+            method: "POST",
+            headers: this.getAuthHeaders(),
+            body: JSON.stringify({
+                Pool: pool,
+                Attributes: attributes ?? {},
+                Snapshot: options.snapshot ?? null,
+                Exclude: options.exclude ?? [],
+                AllowBots: options.allowBots ?? true
+            })
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to find a ghost opponent");
+        const wire = await response.json();
+        return {
+            Match: this.mapGhostMatch(wire.Match),
+            Run: wire.Run ?? null,
+            UploadedSnapshotId: wire.UploadedSnapshotId ?? null
+        };
+    }
+    /** Stores the player's ship (your game's JSON as a string) without searching. */
+    async UploadGhostSnapshot(pool, attributes, snapshot) {
+        const response = await fetch(`${this.apiUri}/Ghost/upload`, {
+            method: "POST",
+            headers: this.getAuthHeaders(),
+            body: JSON.stringify({ Pool: pool, Attributes: attributes ?? {}, Snapshot: snapshot })
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to upload the ghost snapshot");
+        return await response.json();
+    }
+    /**
+     * Reports the fight of a match, once. A repeated report returns the first result. The result
+     * is encrypted and signed like a campaign completion.
+     */
+    async ReportGhostResult(matchId, outcome, fightHash = null) {
+        const headers = this.getAuthHeaders();
+        if (!Object.values(GhostOutcome).includes(outcome)) {
+            throw new GhostError(GhostErrorCode.InvalidOutcome, `Outcome must be Win, Loss or Draw, got "${outcome}".`);
+        }
+        const id = String(matchId).toLowerCase();
+        const plainText = JSON.stringify({ MatchId: id, Outcome: outcome, FightHash: fightHash });
+        const encryptionKey = id.substring(0, 8) + this.config.privateGameKey.substring(0, 8);
+        const encryptedData = await CryptoHelper.encrypt(plainText, encryptionKey);
+        const hash = await CryptoHelper.hmacSha256(encryptedData, this.config.privateGameKey.substring(8));
+        const response = await fetch(`${this.apiUri}/Ghost/report`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ MatchId: id, EncryptedData: encryptedData, Hash: hash })
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to report the ghost fight");
+        const wire = await response.json();
+        return { ...wire, Run: wire.Run ?? null };
+    }
+    /** What the player's ghosts did since the previous call; the call resets the "New" counters. */
+    async GetGhostReportSummary(pool) {
+        const response = await fetch(`${this.apiUri}/Ghost/report-summary?pool=${encodeURIComponent(pool)}`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to fetch the ghost report");
+        return await response.json();
+    }
+    /** The player's fights and the fights against the player's ghosts, newest first. */
+    async GetGhostHistory(pool, page = 1, limit = 20) {
+        const query = `pool=${encodeURIComponent(pool)}&page=${page}&limit=${limit}`;
+        const response = await fetch(`${this.apiUri}/Ghost/history?${query}`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to fetch the ghost history");
+        const wire = await response.json();
+        return { ...wire, Items: wire.Items ?? [] };
+    }
+    /**
+     * Players of the pool's season ranked by rating, plus the player's own place. Only players who
+     * fought this season are ranked. Pass `partition` to read a past season.
+     */
+    async GetGhostLeaderboard(pool, page = 1, limit = 20, partition = null) {
+        let query = `pool=${encodeURIComponent(pool)}&page=${page}&limit=${limit}`;
+        if (partition)
+            query += `&partition=${encodeURIComponent(partition)}`;
+        const response = await fetch(`${this.apiUri}/Ghost/leaderboard?${query}`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, "Failed to fetch the ghost leaderboard");
+        const wire = await response.json();
+        return { ...wire, Items: wire.Items ?? [], Me: wire.Me ?? null };
+    }
+    async ghostRunCall(method, path, pool, fallback) {
+        const response = await fetch(`${this.apiUri}/Ghost/${path}?pool=${encodeURIComponent(pool)}`, {
+            method,
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwGhostError(response, fallback);
+        const wire = await response.json();
+        return {
+            Run: wire.Run ?? null,
+            OpenMatch: wire.OpenMatch ? this.mapGhostMatch(wire.OpenMatch) : null
+        };
+    }
+    mapGhostMatch(wire) {
+        return { ...wire, OpponentAttributes: wire.OpponentAttributes ?? {} };
+    }
+    async throwGhostError(response, fallback) {
+        const text = await response.text();
+        let code = GhostErrorCode.Unknown;
+        let message = text || `HTTP ${response.status}`;
+        try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed.Error === 'string' &&
+                Object.values(GhostErrorCode).includes(parsed.Error)) {
+                code = parsed.Error;
+            }
+            if (parsed && typeof parsed.Message === 'string') {
+                message = parsed.Message;
+            }
+        }
+        catch {
+            // Not a JSON body - keep the raw text under the Unknown code.
+        }
+        throw new GhostError(code, `${fallback}: ${message}`);
     }
     /* ================= Dedicated Server Session Methods =================
      *
