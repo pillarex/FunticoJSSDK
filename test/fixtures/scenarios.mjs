@@ -704,6 +704,54 @@ export const SCENARIOS = [
 
   // -------------------------------------------------------------------------------------------
   {
+    name: 'Inventory: mapping, cache per scope, properties parsing, lookups, error codes',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', tokenConfig(mod));
+      await ctx.call('GetCachedInventory');
+      const inventory = await ctx.call('GetInventory');
+      ctx.check(lastRequest(ctx).url.endsWith('/Inventory'), 'game scope by default');
+      const [shard, hull, bare] = inventory.Items;
+      ctx.check(shard.Count === 3 && shard.UserItemIds.length === 3 && shard.Copies.length === 0, 'stack mapped');
+      ctx.check(hull.Copies.length === 2 && hull.Copies[1].StatsJson === '[]', 'per-copy stats, null defaults to []');
+      ctx.check(bare.Name === '' && bare.UserItemIds.length === 0 && bare.Copies.length === 0, 'null collections defaulted');
+
+      const n = ctx.requests.length;
+      await ctx.call('GetInventory');
+      ctx.expectRequests(n, 'inventory cached');
+      const all = await ctx.call('GetInventory', true, true);
+      ctx.check(lastRequest(ctx).url.endsWith('/Inventory?all=true'), 'other items requested');
+      ctx.check(all.Items.length === 4 && all.Items[3].IsGameItem === false, 'other items included');
+      await ctx.call('GetCachedInventory');
+      await ctx.call('GetCachedInventory', true);
+      await ctx.call('GetInventory', false);
+
+      ctx.check((await ctx.call('FindInventoryItem', inventory, 'sg_shard_missile_hornet'))?.ItemId === 437, 'found by game item id');
+      await ctx.call('FindInventoryItem', inventory, 'sg_missing');
+      ctx.check((await ctx.call('GetInventoryItemProperties', shard)).game.forgeNeed === 5, 'properties parsed');
+      await ctx.call('GetInventoryItemProperties', hull); // not JSON: throws
+      await ctx.call('GetInventoryItemProperties', bare); // no properties: null
+
+      const errors = [
+        json({ Error: 'ReloginRequired', Message: 'Log in to this game again' }, 409),
+        json({ Error: 'PlatformUnavailable', Message: 'Try again later' }, 502),
+        json({ Error: 'NotLinked', Message: 'No Funtico account' }, 400),
+        json({ Error: 'SomethingNew', Message: 'Newer backend' }, 400),
+        text('', 401),
+        text('Bad Gateway', 502),
+      ];
+      for (const e of errors) {
+        ctx.route('GET /Inventory', e);
+        await ctx.call('GetInventory', false);
+        ctx.check(ctx.lastError()?.isInventoryError === true, 'InventoryError thrown');
+      }
+      ctx.route('GET /Inventory', json({}));
+      ctx.check((await ctx.call('GetInventory', false)).Items.length === 0, 'missing Items becomes []');
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
     name: 'Config validation rejects before any request and keeps the previous config',
     async run(ctx) {
       const { mod } = ctx;

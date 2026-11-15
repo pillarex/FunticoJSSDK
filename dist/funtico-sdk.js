@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 c7bf79316029) + src/FunticoClient.ts (sha256 0883e1f8ab7b).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 42ee1a0c3bba) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 (function (root, factory) {
@@ -238,6 +238,32 @@ class CampaignError extends Error {
     }
 }
 /**
+ * Machine-readable reasons an Inventory method can fail. Branch on these, never on message text.
+ */
+var InventoryErrorCode;
+(function (InventoryErrorCode) {
+    /** The player is not linked to a Funtico account. */
+    InventoryErrorCode["NotLinked"] = "NotLinked";
+    /** The player's Funtico session belongs to another game or has expired. Signing in to this game again fixes it. */
+    InventoryErrorCode["ReloginRequired"] = "ReloginRequired";
+    /** The Funtico platform did not answer. Try again later. */
+    InventoryErrorCode["PlatformUnavailable"] = "PlatformUnavailable";
+    /** The response carried no recognisable code. */
+    InventoryErrorCode["Unknown"] = "Unknown";
+})(InventoryErrorCode || (InventoryErrorCode = {}));
+/**
+ * Error thrown by the Inventory methods, carrying a machine-readable Code alongside the
+ * human-readable message. `instanceof InventoryError` is reliable.
+ */
+class InventoryError extends Error {
+    constructor(code, message) {
+        super(message);
+        Object.setPrototypeOf(this, InventoryError.prototype);
+        this.name = 'InventoryError';
+        this.Code = code;
+    }
+}
+/**
  * Cryptography helper class leveraging the browser Web Crypto API.
  * Produces the encrypted payloads and signatures the Funtico API expects.
  */
@@ -320,6 +346,8 @@ class FunticoSDK {
         this.cachedVouchers = null;
         this.cachedCampaignAvailability = null;
         this.cachedCampaignLevels = null;
+        this.cachedInventory = null;
+        this.cachedInventoryWithOtherItems = null;
         this.cacheExpiresAt = 0;
         // Raw room configs from the last GetRooms call, kept for GetTierByEventId.
         this.lastRoomsResponse = null;
@@ -1891,6 +1919,110 @@ class FunticoSDK {
             ? { Collected: this.GetCurrentSessionCollected_Client() }
             : {};
     }
+    /* ================= Inventory Methods ================= */
+    /**
+     * Fetches the items the player owns on the Funtico platform.
+     *
+     * By default only the items that belong to this game are returned. Pass
+     * `includeOtherItems = true` to also receive platform-wide items the player holds, such as
+     * tickets, vouchers and capsules.
+     *
+     * Read-only: items are granted by the platform and by server-side flows, never from the game
+     * client. Rejects with an InventoryError; on `ReloginRequired`, sign the player in to this game
+     * again.
+     *
+     * Shares the SDK-wide cache window (FunticoConfig.cacheTTL) with the other cached getters.
+     */
+    async GetInventory(useCache = true, includeOtherItems = false) {
+        const cached = includeOtherItems ? this.cachedInventoryWithOtherItems : this.cachedInventory;
+        if (useCache && cached && Date.now() < this.cacheExpiresAt) {
+            return cached;
+        }
+        const query = includeOtherItems ? '?all=true' : '';
+        const response = await fetch(`${this.apiUri}/Inventory${query}`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwInventoryError(response, "Failed to fetch inventory");
+        const wire = await response.json();
+        const inventory = {
+            Items: (wire.Items ?? []).map(item => this.mapInventoryItem(item))
+        };
+        if (includeOtherItems) {
+            this.cachedInventoryWithOtherItems = inventory;
+        }
+        else {
+            this.cachedInventory = inventory;
+        }
+        this.updateCacheExpiration();
+        return inventory;
+    }
+    /** Returns the inventory already held in memory - no network call, no TTL check. */
+    GetCachedInventory(includeOtherItems = false) {
+        return includeOtherItems ? this.cachedInventoryWithOtherItems : this.cachedInventory;
+    }
+    /** Finds an owned item by your game's own item key, or null when the player has none. */
+    FindInventoryItem(inventory, gameItemId) {
+        return inventory.Items.find(item => item.GameItemId === gameItemId) ?? null;
+    }
+    /**
+     * Parses an item's PropertiesJson into your game's own type.
+     *
+     * Returns null when the item has no properties. Throws a plain Error when the stored string is
+     * not valid JSON.
+     */
+    GetInventoryItemProperties(item) {
+        if (item.PropertiesJson === null) {
+            return null;
+        }
+        try {
+            return JSON.parse(item.PropertiesJson);
+        }
+        catch {
+            throw new Error(`Inventory item "${item.Name}" carries properties that are not valid JSON.`);
+        }
+    }
+    mapInventoryItem(wire) {
+        return {
+            ItemId: wire.ItemId,
+            GameItemId: wire.GameItemId ?? null,
+            Name: wire.Name ?? '',
+            Description: wire.Description ?? null,
+            ImageUrl: wire.ImageUrl ?? null,
+            Count: wire.Count,
+            UserItemIds: wire.UserItemIds ?? [],
+            IsConsumable: wire.IsConsumable,
+            IsInfinity: wire.IsInfinity,
+            IsGameItem: wire.IsGameItem,
+            IsSellable: wire.IsSellable,
+            Rarity: wire.Rarity ?? null,
+            PropertiesJson: wire.PropertiesJson ?? null,
+            BaseStatsJson: wire.BaseStatsJson ?? null,
+            Copies: (wire.Copies ?? []).map(copy => ({
+                UserItemId: copy.UserItemId,
+                StatsJson: copy.StatsJson ?? '[]'
+            }))
+        };
+    }
+    async throwInventoryError(response, fallback) {
+        const text = await response.text();
+        let code = InventoryErrorCode.Unknown;
+        let message = text || `HTTP ${response.status}`;
+        try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed.Error === 'string' &&
+                Object.values(InventoryErrorCode).includes(parsed.Error)) {
+                code = parsed.Error;
+            }
+            if (parsed && typeof parsed.Message === 'string') {
+                message = parsed.Message;
+            }
+        }
+        catch {
+            // Not a JSON body - keep the raw text under the Unknown code.
+        }
+        throw new InventoryError(code, `${fallback}: ${message}`);
+    }
     /* ================= Dedicated Server Session Methods =================
      *
      * NOTE: The Dedicated Server methods are not supported at the moment; do not use them.
@@ -2169,6 +2301,15 @@ class FunticoClient {
         this.emit(FunticoClient.EVENTS.CAMPAIGN_PROGRESS_UPDATED, result);
         return result;
     }
+    /**
+     * Fetches the player's inventory (FunticoSDK.GetInventory) and broadcasts it as
+     * INVENTORY_UPDATED, so an inventory screen can rebind without owning the request.
+     */
+    async refreshInventory(useCache = false, includeOtherItems = false) {
+        const inventory = await this.sdk.GetInventory(useCache, includeOtherItems);
+        this.emit(FunticoClient.EVENTS.INVENTORY_UPDATED, inventory);
+        return inventory;
+    }
 }
 /** Event names. Keys and values are identical to FunticoPhaserPlugin.EVENTS. */
 FunticoClient.EVENTS = {
@@ -2176,7 +2317,8 @@ FunticoClient.EVENTS = {
     AUTHENTICATED: 'funtico_authenticated',
     USER_DATA_UPDATED: 'funtico_user_updated',
     BALANCE_UPDATED: 'funtico_balance_updated',
-    CAMPAIGN_PROGRESS_UPDATED: 'funtico_campaign_progress_updated'
+    CAMPAIGN_PROGRESS_UPDATED: 'funtico_campaign_progress_updated',
+    INVENTORY_UPDATED: 'funtico_inventory_updated'
 };
 
 return {
@@ -2195,6 +2337,8 @@ return {
   CampaignLevelStatus: CampaignLevelStatus,
   CampaignErrorCode: CampaignErrorCode,
   CampaignError: CampaignError,
+  InventoryErrorCode: InventoryErrorCode,
+  InventoryError: InventoryError,
   CryptoHelper: CryptoHelper,
   FunticoSDK: FunticoSDK,
   FunticoClient: FunticoClient

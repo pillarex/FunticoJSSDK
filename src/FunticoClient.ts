@@ -8,7 +8,8 @@ import {
   BalanceResponse,
   CampaignLevelsViewModel,
   CampaignMetrics,
-  CampaignCompletionResult
+  CampaignCompletionResult,
+  InventoryResponse
 } from "../upstream/phaser/FunticoPhaserSDK";
 
 /** A registered listener: the callback plus the `this` it is invoked with, and whether it fires once. */
@@ -59,7 +60,8 @@ export class FunticoClient {
     AUTHENTICATED: 'funtico_authenticated',
     USER_DATA_UPDATED: 'funtico_user_updated',
     BALANCE_UPDATED: 'funtico_balance_updated',
-    CAMPAIGN_PROGRESS_UPDATED: 'funtico_campaign_progress_updated'
+    CAMPAIGN_PROGRESS_UPDATED: 'funtico_campaign_progress_updated',
+    INVENTORY_UPDATED: 'funtico_inventory_updated'
   };
 
   /** The SDK singleton (always FunticoSDK.Instance). Use it for everything that has no event. */
@@ -216,5 +218,15 @@ export class FunticoClient {
     const result = await this.sdk.CompleteCampaignLevel(metrics);
     this.emit(FunticoClient.EVENTS.CAMPAIGN_PROGRESS_UPDATED, result);
     return result;
+  }
+
+  /**
+   * Fetches the player's inventory (FunticoSDK.GetInventory) and broadcasts it as
+   * INVENTORY_UPDATED, so an inventory screen can rebind without owning the request.
+   */
+  public async refreshInventory(useCache = false, includeOtherItems = false): Promise<InventoryResponse> {
+    const inventory = await this.sdk.GetInventory(useCache, includeOtherItems);
+    this.emit(FunticoClient.EVENTS.INVENTORY_UPDATED, inventory);
+    return inventory;
   }
 }

@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 c7bf79316029) + src/FunticoClient.ts (sha256 0883e1f8ab7b).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 42ee1a0c3bba) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -795,6 +795,68 @@ export interface CampaignCompletionResult extends CampaignProgressSummary {
     RewardsGranted: boolean;
 }
 /**
+ * Machine-readable reasons an Inventory method can fail. Branch on these, never on message text.
+ */
+export declare enum InventoryErrorCode {
+    /** The player is not linked to a Funtico account. */
+    NotLinked = "NotLinked",
+    /** The player's Funtico session belongs to another game or has expired. Signing in to this game again fixes it. */
+    ReloginRequired = "ReloginRequired",
+    /** The Funtico platform did not answer. Try again later. */
+    PlatformUnavailable = "PlatformUnavailable",
+    /** The response carried no recognisable code. */
+    Unknown = "Unknown"
+}
+/**
+ * Error thrown by the Inventory methods, carrying a machine-readable Code alongside the
+ * human-readable message. `instanceof InventoryError` is reliable.
+ */
+export declare class InventoryError extends Error {
+    readonly Code: InventoryErrorCode;
+    constructor(code: InventoryErrorCode, message: string);
+}
+/** Stats one copy of an infinity item has accumulated. */
+export interface InventoryItemCopy {
+    UserItemId: number;
+    /** The copy's stats as a JSON string; "[]" while it has none. */
+    StatsJson: string;
+}
+/**
+ * One item the player owns, with every copy folded in.
+ *
+ * `PropertiesJson` is the item's properties as configured in the Funtico item catalog: an opaque
+ * JSON object string whose game-specific part belongs to YOUR game - parse it via
+ * GetInventoryItemProperties<T>().
+ */
+export interface InventoryItem {
+    /** Funtico catalog id of the item - the same id prizes and entry fees refer to. */
+    ItemId: number;
+    /** Your game's own key for the item, as set in the item catalog. May be null. */
+    GameItemId: string | null;
+    Name: string;
+    Description: string | null;
+    ImageUrl: string | null;
+    /** How many copies the player holds. */
+    Count: number;
+    /** Ids of the individual copies. */
+    UserItemIds: number[];
+    IsConsumable: boolean;
+    IsInfinity: boolean;
+    /** True when the item belongs to this game. */
+    IsGameItem: boolean;
+    IsSellable: boolean;
+    Rarity: string | null;
+    PropertiesJson: string | null;
+    /** Base stats of an infinity item as configured in the catalog, or null. */
+    BaseStatsJson: string | null;
+    /** Per-copy stats of an infinity item; empty for other items. */
+    Copies: InventoryItemCopy[];
+}
+/** The player's items, as returned by GetInventory. */
+export interface InventoryResponse {
+    Items: InventoryItem[];
+}
+/**
  * Cryptography helper class leveraging the browser Web Crypto API.
  * Produces the encrypted payloads and signatures the Funtico API expects.
  */
@@ -828,6 +890,8 @@ export declare class FunticoSDK {
     private cachedVouchers;
     private cachedCampaignAvailability;
     private cachedCampaignLevels;
+    private cachedInventory;
+    private cachedInventoryWithOtherItems;
     private cacheExpiresAt;
     private lastRoomsResponse;
     private activeClientSessionDbId;
@@ -1248,6 +1312,33 @@ export declare class FunticoSDK {
     GetCurrentSessionCollected_Client(): Record<string, number>;
     private getCollectedPayload;
     /**
+     * Fetches the items the player owns on the Funtico platform.
+     *
+     * By default only the items that belong to this game are returned. Pass
+     * `includeOtherItems = true` to also receive platform-wide items the player holds, such as
+     * tickets, vouchers and capsules.
+     *
+     * Read-only: items are granted by the platform and by server-side flows, never from the game
+     * client. Rejects with an InventoryError; on `ReloginRequired`, sign the player in to this game
+     * again.
+     *
+     * Shares the SDK-wide cache window (FunticoConfig.cacheTTL) with the other cached getters.
+     */
+    GetInventory(useCache?: boolean, includeOtherItems?: boolean): Promise<InventoryResponse>;
+    /** Returns the inventory already held in memory - no network call, no TTL check. */
+    GetCachedInventory(includeOtherItems?: boolean): InventoryResponse | null;
+    /** Finds an owned item by your game's own item key, or null when the player has none. */
+    FindInventoryItem(inventory: InventoryResponse, gameItemId: string): InventoryItem | null;
+    /**
+     * Parses an item's PropertiesJson into your game's own type.
+     *
+     * Returns null when the item has no properties. Throws a plain Error when the stored string is
+     * not valid JSON.
+     */
+    GetInventoryItemProperties<T = unknown>(item: InventoryItem): T | null;
+    private mapInventoryItem;
+    private throwInventoryError;
+    /**
      * Registers a new multiplayer session on the API from a Dedicated Game Server.
      */
     CreateSession_Server(serverUrl: string, sessionId: string, playersInfo: ServerUserData[]): Promise<boolean>;
@@ -1325,6 +1416,7 @@ export declare class FunticoClient {
         USER_DATA_UPDATED: string;
         BALANCE_UPDATED: string;
         CAMPAIGN_PROGRESS_UPDATED: string;
+        INVENTORY_UPDATED: string;
     };
     /** The SDK singleton (always FunticoSDK.Instance). Use it for everything that has no event. */
     readonly sdk: FunticoSDK;
@@ -1377,4 +1469,9 @@ export declare class FunticoClient {
      * outcome as CAMPAIGN_PROGRESS_UPDATED(CampaignCompletionResult).
      */
     completeCampaignLevel(metrics: CampaignMetrics): Promise<CampaignCompletionResult>;
+    /**
+     * Fetches the player's inventory (FunticoSDK.GetInventory) and broadcasts it as
+     * INVENTORY_UPDATED, so an inventory screen can rebind without owning the request.
+     */
+    refreshInventory(useCache?: boolean, includeOtherItems?: boolean): Promise<InventoryResponse>;
 }

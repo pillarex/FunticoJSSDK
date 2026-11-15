@@ -83,7 +83,13 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`AbandonCampaignAttempt`](#abandoncampaignattempt)
    - [`CompleteCampaignLevel`](#completecampaignlevel)
    - [`CampaignError`](#campaignerror)
-7. [Client Session Methods (Reconnection)](#client-session-methods-reconnection)
+7. [Inventory Methods](#inventory-methods)
+   - [`GetInventory`](#getinventory)
+   - [`GetCachedInventory`](#getcachedinventory)
+   - [`FindInventoryItem`](#findinventoryitem)
+   - [`GetInventoryItemProperties`](#getinventoryitemproperties)
+   - [`InventoryError`](#inventoryerror)
+8. [Client Session Methods (Reconnection)](#client-session-methods-reconnection)
    - [`UserHasUnfinishedSession_Client`](#userhasunfinishedsession_client)
    - [`ReconnectToUnfinishedSession_Client`](#reconnecttounfinishedsession_client)
    - [`CreateSession_Client`](#createsession_client)
@@ -93,14 +99,14 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`RecordCollected_Client`](#recordcollected_client)
    - [`GetCurrentSessionCollected_Client`](#getcurrentsessioncollected_client)
    - [`GetCurrentSessionEvents_Client`](#getcurrentsessionevents_client)
-8. [Dedicated Server Methods](#dedicated-server-methods)
+9. [Dedicated Server Methods](#dedicated-server-methods)
    - [`CreateSession_Server`](#createsession_server)
    - [`UserLeaveSession_Server`](#userleavesession_server)
    - [`CloseCurrentSession_Server`](#closecurrentsession_server)
    - [`FinishRoomSession_Server`](#finishroomsession_server)
    - [`RecordEvent_Server`](#recordevent_server)
    - [`GetCurrentSessionEvents_Server`](#getcurrentsessionevents_server)
-9. [FunticoClient (Event Wrapper)](#funticoclient-event-wrapper)
+10. [FunticoClient (Event Wrapper)](#funticoclient-event-wrapper)
    - [`constructor`](#constructor)
    - [`sdk`](#sdk)
    - [`on`](#on)
@@ -112,9 +118,10 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`refreshBalance`](#refreshbalance)
    - [`refreshCampaign`](#refreshcampaign)
    - [`completeCampaignLevel`](#completecampaignlevel-1)
+   - [`refreshInventory`](#refreshinventory)
    - [`EVENTS`](#events)
    - [Differences from the Phaser plugin](#differences-from-the-phaser-plugin)
-10. [Utilities & Types](#utilities--types)
+11. [Utilities & Types](#utilities--types)
     - [`CryptoHelper.encrypt`](#cryptohelperencrypt)
     - [`CryptoHelper.decrypt`](#cryptohelperdecrypt)
     - [`CryptoHelper.hmacSha256`](#cryptohelperhmacsha256)
@@ -2654,6 +2661,131 @@ const { CampaignError, CampaignErrorCode } = FunticoSDK;
 
 ---
 
+## Inventory Methods
+
+The player's items on the Funtico platform: what they own, how many copies, and what each item means to your game. Items are defined in the Funtico item catalog, where each item can carry **properties**: a JSON object whose game-specific part belongs to your game (for example which module a blueprint unlocks).
+
+These methods are **read-only.** Items are granted by the platform (prizes, rewards) and by server-side flows, never from the game client.
+
+> **Casing note:** Inventory responses are **PascalCase** (`Items`, `GameItemId`, `Count`).
+
+**Failure model.** Inventory methods reject with an `InventoryError` carrying a machine-readable `Code`. Branch on the code, never on message text. `ReloginRequired` means the player's Funtico session belongs to another game or has expired: sign the player in to this game again.
+
+---
+
+### `GetInventory`
+
+Fetches the items the player owns.
+
+**Signature:**
+```ts
+GetInventory(useCache = true, includeOtherItems = false): Promise<InventoryResponse>
+```
+
+**Parameters:**
+- `useCache` - When `true`, returns the cached copy if one exists and the shared TTL window has not expired. Default: `true`.
+- `includeOtherItems` - When `false`, only items that belong to this game are returned. When `true`, platform-wide items the player holds (tickets, vouchers, capsules) are included too. The two scopes are cached separately. Default: `false`.
+
+**Returns:** `Promise<InventoryResponse>` with `Items: InventoryItem[]`.
+
+**InventoryItem Properties:**
+- `ItemId` (`number`) - Funtico catalog id of the item, the same id prizes and entry fees refer to.
+- `GameItemId` (`string | null`) - Your game's own key for the item, as set in the item catalog.
+- `Name`, `Description`, `ImageUrl` - Display data from the catalog.
+- `Count` (`number`) - How many copies the player holds.
+- `UserItemIds` (`number[]`) - Ids of the individual copies.
+- `IsConsumable`, `IsInfinity`, `IsSellable` (`boolean`) - Catalog flags.
+- `IsGameItem` (`boolean`) - `true` when the item belongs to this game.
+- `Rarity` (`string | null`) - Rarity name from the catalog.
+- `PropertiesJson` (`string | null`) - The item's properties as a JSON object string. Parse with `GetInventoryItemProperties`.
+- `BaseStatsJson` (`string | null`) - Base stats of an infinity item, as configured in the catalog.
+- `Copies` (`InventoryItemCopy[]`) - Per-copy stats of an infinity item (`UserItemId`, `StatsJson`, `"[]"` while a copy has none); empty for other items.
+
+**Usage:**
+```js
+const inventory = await sdk.GetInventory();
+
+for (const item of inventory.Items) {
+  addInventorySlot(item.Name, item.ImageUrl, item.Count);
+}
+```
+
+---
+
+### `GetCachedInventory`
+
+Returns the inventory already held in memory: no network call, no TTL check. `null` until `GetInventory` has run for that scope.
+
+**Signature:**
+```ts
+GetCachedInventory(includeOtherItems = false): InventoryResponse | null
+```
+
+---
+
+### `FindInventoryItem`
+
+Finds an owned item by your game's own item key.
+
+**Signature:**
+```ts
+FindInventoryItem(inventory: InventoryResponse, gameItemId: string): InventoryItem | null
+```
+
+**Usage:**
+```js
+const inventory = await sdk.GetInventory();
+const shards = sdk.FindInventoryItem(inventory, 'sg_shard_missile_hornet')?.Count ?? 0;
+```
+
+---
+
+### `GetInventoryItemProperties`
+
+Parses an item's `PropertiesJson` into your game's own type. Returns `null` when the item has no properties; throws a plain `Error` when the stored string is not valid JSON.
+
+**Signature:**
+```ts
+GetInventoryItemProperties<T = unknown>(item: InventoryItem): T | null
+```
+
+**Usage:**
+```js
+const props = sdk.GetInventoryItemProperties(item);
+if (props?.game?.type === 'blueprint_shard') {
+  showForgeProgress(props.game.partId, item.Count, props.game.forgeNeed);
+}
+```
+
+---
+
+### `InventoryError`
+
+The error every Inventory method rejects with.
+
+**InventoryErrorCode Values:**
+- `NotLinked` - The player is not linked to a Funtico account.
+- `ReloginRequired` - The player's Funtico session belongs to another game or has expired. Sign the player in to this game again.
+- `PlatformUnavailable` - The Funtico platform did not answer. Try again later.
+- `Unknown` - The response carried no recognisable code.
+
+**Usage:**
+```js
+import { InventoryError, InventoryErrorCode } from './funtico-sdk.mjs';
+
+try {
+  await sdk.GetInventory(false);
+} catch (error) {
+  if (error instanceof InventoryError && error.Code === InventoryErrorCode.ReloginRequired) {
+    showLogin();
+  } else {
+    throw error;
+  }
+}
+```
+
+---
+
 ## Client Session Methods (Reconnection)
 
 Use these methods in **client builds** (browser / Telegram Mini App) to make a match survivable across a page reload, a dropped connection, or a browser crash. A client session is a small encrypted blob of your own game state stored server-side alongside the room/tournament identifiers, so that a returning player can be dropped back exactly where they left off.
@@ -3750,6 +3882,22 @@ export async function onRunFinished(run) {
 
 ---
 
+### `refreshInventory`
+
+Fetches the player's inventory and broadcasts it, so an inventory screen can rebind without owning the request.
+
+**Signature:**
+```ts
+async refreshInventory(useCache = false, includeOtherItems = false): Promise<InventoryResponse>
+```
+
+**Returns:** `Promise<InventoryResponse>` - The same object is passed as the payload of `EVENTS.INVENTORY_UPDATED`. Rejects like `GetInventory` does (with an `InventoryError`); nothing is emitted on failure.
+
+**Emits:**
+- `EVENTS.INVENTORY_UPDATED` - After the fetch resolves. Payload: the `InventoryResponse` object.
+
+---
+
 ### `EVENTS`
 
 Static map of the event names the client emits. Reference these constants instead of hard-coding the raw strings: the constants are part of the SDK's public surface, the string values are an implementation detail. Keys and values are identical to `FunticoPhaserPlugin.EVENTS`.
@@ -3761,7 +3909,8 @@ static readonly EVENTS = {
   AUTHENTICATED: 'funtico_authenticated',
   USER_DATA_UPDATED: 'funtico_user_updated',
   BALANCE_UPDATED: 'funtico_balance_updated',
-  CAMPAIGN_PROGRESS_UPDATED: 'funtico_campaign_progress_updated'
+  CAMPAIGN_PROGRESS_UPDATED: 'funtico_campaign_progress_updated',
+  INVENTORY_UPDATED: 'funtico_inventory_updated'
 }
 ```
 
@@ -3774,6 +3923,7 @@ static readonly EVENTS = {
 | `USER_DATA_UPDATED` | `'funtico_user_updated'` | `data: UserData` | `refreshUserData()` |
 | `BALANCE_UPDATED` | `'funtico_balance_updated'` | `balance: BalanceResponse` | `refreshBalance()` |
 | `CAMPAIGN_PROGRESS_UPDATED` | `'funtico_campaign_progress_updated'` | `CampaignLevelsViewModel` or `CampaignCompletionResult` | `refreshCampaign()`, `completeCampaignLevel()` |
+| `INVENTORY_UPDATED` | `'funtico_inventory_updated'` | `InventoryResponse` | `refreshInventory()` |
 
 **EVENTS Properties:**
 - `INITIALIZED` (`'funtico_initialized'`) - Emitted by `init()` once `sdk.Initialize(config)` resolves successfully. **Payload:** none, the listener receives no arguments. Not emitted when initialization fails; `init()` rejects instead.

@@ -46,6 +46,7 @@ export function normalizeError(err, mod) {
     ctor: err.constructor ? err.constructor.name : null,
     isError: err instanceof Error,
     isCampaignError: mod.CampaignError ? err instanceof mod.CampaignError : false,
+    isInventoryError: mod.InventoryError ? err instanceof mod.InventoryError : false,
     code: err.Code,
   };
 }

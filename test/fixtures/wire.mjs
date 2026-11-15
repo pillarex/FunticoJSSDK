@@ -295,6 +295,42 @@ export const HOF_DISTRIBUTION = {
 
 export const CAMPAIGN_AVAILABILITY = { IsAvailable: true, LevelCount: 4, MaxStars: 12 };
 
+/** GET /Inventory: a stack, an infinity item with per-copy stats, and an entry with every nullable field null. */
+export const INVENTORY_GAME = {
+  Items: [
+    {
+      ItemId: 437, GameItemId: 'sg_shard_missile_hornet', Name: 'Blueprint Shard: Hornet Swarm', Description: null,
+      ImageUrl: 'https://cdn.example/shard.png', Count: 3, UserItemIds: [9001, 9002, 9003],
+      IsConsumable: true, IsInfinity: false, IsGameItem: true, IsSellable: false, Rarity: null,
+      PropertiesJson: '{"game":{"type":"blueprint_shard","partId":"missile_hornet","forgeNeed":5}}',
+      BaseStatsJson: null, Copies: [],
+    },
+    {
+      ItemId: 435, GameItemId: 'sg_hull_test', Name: 'Test Hull', Description: 'An infinity item', ImageUrl: null,
+      Count: 2, UserItemIds: [9010, 9011], IsConsumable: false, IsInfinity: true, IsGameItem: true, IsSellable: true,
+      Rarity: 'Rare', PropertiesJson: 'not json', BaseStatsJson: '{ "power": 12 }',
+      Copies: [{ UserItemId: 9010, StatsJson: '[{"key":"totalWins","value":4}]' }, { UserItemId: 9011, StatsJson: null }],
+    },
+    {
+      ItemId: 439, GameItemId: null, Name: null, Description: null, ImageUrl: null, Count: 1, UserItemIds: null,
+      IsConsumable: false, IsInfinity: false, IsGameItem: true, IsSellable: false, Rarity: null,
+      PropertiesJson: null, BaseStatsJson: null, Copies: null,
+    },
+  ],
+};
+
+/** GET /Inventory?all=true: the same plus a platform-wide ticket stack. */
+export const INVENTORY_ALL = {
+  Items: [
+    ...INVENTORY_GAME.Items,
+    {
+      ItemId: 8, GameItemId: 'final_ticket', Name: 'Finals Ticket', Description: null, ImageUrl: 'https://cdn.example/ticket.png',
+      Count: 29, UserItemIds: Array.from({ length: 29 }, (_, i) => 5000 + i), IsConsumable: true, IsInfinity: false,
+      IsGameItem: false, IsSellable: false, Rarity: 'Epic', PropertiesJson: null, BaseStatsJson: null, Copies: [],
+    },
+  ],
+};
+
 const STAR_RULES = JSON.stringify({
   Win: [{ Metric: 'score', Op: '>=', Value: 100 }],
   Stars: [
@@ -432,6 +468,8 @@ export function defaultRoutes() {
       return json(campaignStart(req.url.searchParams.get('levelId'), state.attempts));
     },
     'POST /Campaign/complete-level': json(CAMPAIGN_COMPLETION),
+
+    'GET /Inventory': req => json(req.url.searchParams.get('all') === 'true' ? INVENTORY_ALL : INVENTORY_GAME),
 
     'GET /Session/any-unfinished-sessions': json({ SavedSessions: [SAVED_SESSION] }),
     'GET /Session/reconnect-to-session': json(SAVED_SESSION),
