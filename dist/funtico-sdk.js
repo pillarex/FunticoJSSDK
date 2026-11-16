@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 e847e4795cbf) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 81882e380ff1) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 (function (root, factory) {
@@ -263,6 +263,20 @@ class InventoryError extends Error {
         this.Code = code;
     }
 }
+/** Values of RecentReward.Status. */
+var RecentRewardStatus;
+(function (RecentRewardStatus) {
+    /** Accepted and on its way to the player's inventory. */
+    RecentRewardStatus["Queued"] = "Queued";
+    /** In the player's inventory. */
+    RecentRewardStatus["Delivered"] = "Delivered";
+    /** A random draw that paid nothing. */
+    RecentRewardStatus["Empty"] = "Empty";
+    /** The platform refused it. */
+    RecentRewardStatus["Refused"] = "Refused";
+    /** Gave up after repeated failures. */
+    RecentRewardStatus["Failed"] = "Failed";
+})(RecentRewardStatus || (RecentRewardStatus = {}));
 /**
  * Machine-readable reasons a Ghost method can fail. Branch on these, never on message text.
  * `NoOpponent` is a normal outcome: nobody matched and no bot was available - fall back to a
@@ -2019,6 +2033,45 @@ class FunticoSDK {
             throw new Error(`Inventory item "${item.Name}" carries properties that are not valid JSON.`);
         }
     }
+    /**
+     * The player's latest rewards in this game, newest first: what runs (RecordCollected_Client),
+     * campaign levels and arena runs paid. Call it after a result to show what the run brought.
+     *
+     * @param limit 1-100, default 20.
+     * @param since Only rewards created at or after this moment, for example when the run started.
+     *
+     * Always calls the server. Rejects with an InventoryError. A reward that could not reach the
+     * platform yet is listed as Queued and delivered later, at the latest on the player's next login.
+     */
+    async GetRecentRewards(limit = 20, since = null) {
+        const params = new URLSearchParams({ limit: String(Math.min(Math.max(Math.trunc(limit) || 20, 1), 100)) });
+        if (since)
+            params.set('since', since.toISOString());
+        const response = await fetch(`${this.apiUri}/Rewards/recent?${params.toString()}`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwInventoryError(response, "Failed to fetch recent rewards");
+        const wire = await response.json();
+        return {
+            Rewards: (wire.Rewards ?? []).map(reward => ({
+                Id: reward.Id,
+                Source: reward.Source ?? '',
+                RunId: reward.RunId ?? '',
+                Key: reward.Key ?? '',
+                Status: reward.Status ?? '',
+                Items: (reward.Items ?? []).map(item => ({
+                    ItemId: item.ItemId,
+                    GameItemId: item.GameItemId ?? null,
+                    Name: item.Name ?? null,
+                    ImageUrl: item.ImageUrl ?? null,
+                    Amount: item.Amount ?? 1
+                })),
+                CreatedAt: reward.CreatedAt,
+                DeliveredAt: reward.DeliveredAt ?? null
+            }))
+        };
+    }
     mapInventoryItem(wire) {
         return {
             ItemId: wire.ItemId,
@@ -2539,6 +2592,7 @@ return {
   CampaignError: CampaignError,
   InventoryErrorCode: InventoryErrorCode,
   InventoryError: InventoryError,
+  RecentRewardStatus: RecentRewardStatus,
   GhostErrorCode: GhostErrorCode,
   GhostError: GhostError,
   GhostOutcome: GhostOutcome,

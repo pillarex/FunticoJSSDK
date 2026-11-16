@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 e847e4795cbf) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 81882e380ff1) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -856,6 +856,51 @@ export interface InventoryItem {
 export interface InventoryResponse {
     Items: InventoryItem[];
 }
+/** Values of RecentReward.Status. */
+export declare enum RecentRewardStatus {
+    /** Accepted and on its way to the player's inventory. */
+    Queued = "Queued",
+    /** In the player's inventory. */
+    Delivered = "Delivered",
+    /** A random draw that paid nothing. */
+    Empty = "Empty",
+    /** The platform refused it. */
+    Refused = "Refused",
+    /** Gave up after repeated failures. */
+    Failed = "Failed"
+}
+/** One item a reward pays. */
+export interface RecentRewardItem {
+    /** Funtico catalog id of the item. */
+    ItemId: number;
+    /** Your game's own key for the item. May be null. */
+    GameItemId: string | null;
+    Name: string | null;
+    ImageUrl: string | null;
+    Amount: number;
+}
+/** One reward a run, a campaign level or an arena run paid (or is paying) the player. */
+export interface RecentReward {
+    Id: string;
+    /** 'Room', 'Tournament', 'Practice', 'Campaign' or 'Arena'. */
+    Source: string;
+    /** The run it belongs to. */
+    RunId: string;
+    /** The collected key or reward table that produced it. */
+    Key: string;
+    /** A RecentRewardStatus value. */
+    Status: string;
+    /** What it pays. Empty for an Empty draw and for some rewards not delivered yet. */
+    Items: RecentRewardItem[];
+    /** ISO-8601, UTC. */
+    CreatedAt: string;
+    /** ISO-8601, UTC; null until delivered. */
+    DeliveredAt: string | null;
+}
+/** The player's latest rewards in this game, newest first, as returned by GetRecentRewards. */
+export interface RecentRewardsResponse {
+    Rewards: RecentReward[];
+}
 /**
  * Machine-readable reasons a Ghost method can fail. Branch on these, never on message text.
  * `NoOpponent` is a normal outcome: nobody matched and no bot was available - fall back to a
@@ -1523,6 +1568,17 @@ export declare class FunticoSDK {
      * not valid JSON.
      */
     GetInventoryItemProperties<T = unknown>(item: InventoryItem): T | null;
+    /**
+     * The player's latest rewards in this game, newest first: what runs (RecordCollected_Client),
+     * campaign levels and arena runs paid. Call it after a result to show what the run brought.
+     *
+     * @param limit 1-100, default 20.
+     * @param since Only rewards created at or after this moment, for example when the run started.
+     *
+     * Always calls the server. Rejects with an InventoryError. A reward that could not reach the
+     * platform yet is listed as Queued and delivered later, at the latest on the player's next login.
+     */
+    GetRecentRewards(limit?: number, since?: Date | null): Promise<RecentRewardsResponse>;
     private mapInventoryItem;
     private throwInventoryError;
     /** The game's ghost pools, their attributes and the player's rating in each. */

@@ -88,6 +88,7 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`GetCachedInventory`](#getcachedinventory)
    - [`FindInventoryItem`](#findinventoryitem)
    - [`GetInventoryItemProperties`](#getinventoryitemproperties)
+   - [`GetRecentRewards`](#getrecentrewards)
    - [`InventoryError`](#inventoryerror)
 8. [Ghost Matchmaking Methods](#ghost-matchmaking-methods)
    - [`GetGhostPools`](#getghostpools)
@@ -2764,6 +2765,47 @@ GetInventoryItemProperties<T = unknown>(item: InventoryItem): T | null
 const props = sdk.GetInventoryItemProperties(item);
 if (props?.game?.type === 'blueprint_shard') {
   showForgeProgress(props.game.partId, item.Count, props.game.forgeNeed);
+}
+```
+
+---
+
+### `GetRecentRewards`
+
+The player's latest rewards in this game, newest first: what runs (`RecordCollected_Client`), campaign levels and arena runs paid. Call it after a result to show what the run brought.
+
+**Signature:**
+```ts
+GetRecentRewards(limit?: number, since?: Date | null): Promise<RecentRewardsResponse>
+```
+
+**Parameters:**
+- `limit` - How many to return, 1-100. Default: `20`.
+- `since` - Only rewards created at or after this moment, for example when the run started. Default: all.
+
+**RecentReward fields:**
+- `Id` - Unique id of the reward
+- `Source` - `'Room'`, `'Tournament'`, `'Practice'`, `'Campaign'` or `'Arena'`
+- `RunId` - The run it belongs to
+- `Key` - The collected key or reward table that produced it
+- `Status` - A `RecentRewardStatus` value: `Queued` (on its way), `Delivered`, `Empty` (a random draw that paid nothing), `Refused`, `Failed`
+- `Items` - `{ ItemId, GameItemId, Name, ImageUrl, Amount }[]`; empty for an `Empty` draw
+- `CreatedAt` / `DeliveredAt` - ISO-8601 strings (UTC); `DeliveredAt` is null until delivered
+
+Rewards are paid by the server once the result is accepted. A reward that could not reach the platform yet stays `Queued` and is delivered later, at the latest on the player's next login. A result the platform has not accepted never appears. Always calls the server; rejects with an `InventoryError`.
+
+**Usage:**
+```js
+const runStarted = new Date();
+// ... play the run, then submit the result ...
+const recent = await sdk.GetRecentRewards(20, runStarted);
+for (const reward of recent.Rewards) {
+  for (const item of reward.Items) {
+    showFromYourRun(item.GameItemId, item.Name, item.ImageUrl, item.Amount);
+  }
+}
+if (recent.Rewards.some(r => r.Status === 'Delivered')) {
+  await sdk.GetInventory(false);
 }
 ```
 

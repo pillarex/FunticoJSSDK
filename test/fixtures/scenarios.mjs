@@ -752,6 +752,36 @@ export const SCENARIOS = [
 
   // -------------------------------------------------------------------------------------------
   {
+    name: 'Recent rewards: query, mapping, null defaults, error codes',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', tokenConfig(mod));
+      const recent = await ctx.call('GetRecentRewards');
+      ctx.check(lastRequest(ctx).url.endsWith('/Rewards/recent?limit=20'), 'default limit sent');
+      const [drop, empty, queued, bare] = recent.Rewards;
+      ctx.check(drop.Status === 'Delivered' && drop.Items[0].GameItemId === 'sg_module_laser_helios' && drop.DeliveredAt !== null, 'delivered drop mapped');
+      ctx.check(empty.Status === 'Empty' && empty.Items.length === 0, 'empty draw has no items');
+      ctx.check(queued.Items.length === 0 && queued.Source === 'Campaign', 'null Items becomes []');
+      ctx.check(bare.Source === '' && bare.Key === '' && bare.Items[0].Amount === 1 && bare.Items[0].Name === null, 'null strings defaulted, amount defaults to 1');
+
+      await ctx.call('GetRecentRewards', 500, new Date('2026-11-16T10:00:00.000Z'));
+      const url = new URL(lastRequest(ctx).url);
+      ctx.check(url.searchParams.get('limit') === '100' && url.searchParams.get('since') === '2026-11-16T10:00:00.000Z', 'limit clamped, since as ISO');
+      await ctx.call('GetRecentRewards', 0);
+      ctx.check(new URL(lastRequest(ctx).url).searchParams.get('limit') === '20', 'zero limit falls back to 20');
+
+      ctx.route('GET /Rewards/recent', json({}));
+      ctx.check((await ctx.call('GetRecentRewards')).Rewards.length === 0, 'missing Rewards becomes []');
+      for (const e of [json({ Error: 'ReloginRequired', Message: 'Log in again' }, 409), text('', 401), text('oops', 500)]) {
+        ctx.route('GET /Rewards/recent', e);
+        await ctx.call('GetRecentRewards');
+        ctx.check(ctx.lastError()?.isInventoryError === true, 'InventoryError thrown');
+      }
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
     name: 'Ghost matchmaking: pools, run lifecycle, find/upload, signed report, summary, history, error codes',
     async run(ctx) {
       const { mod } = ctx;

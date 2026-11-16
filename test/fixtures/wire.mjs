@@ -402,6 +402,30 @@ export const GHOST_LEADERBOARD = {
   Page: 1, Limit: 2, HasMore: true,
 };
 
+/** GET /Rewards/recent: a delivered random drop, an empty draw, a queued event reward with nulls. */
+export const RECENT_REWARDS = {
+  Rewards: [
+    {
+      Id: 'e1e1e1e1-0000-4000-8000-000000000001', Source: 'Room', RunId: 'session-77', Key: 'sg_run_loot', Status: 'Delivered',
+      Items: [{ ItemId: 442, GameItemId: 'sg_module_laser_helios', Name: 'Helios Beam Cutter', ImageUrl: 'https://cdn/442.png', Amount: 1 }],
+      CreatedAt: '2026-11-16T10:00:00Z', DeliveredAt: '2026-11-16T10:00:01Z',
+    },
+    {
+      Id: 'e1e1e1e1-0000-4000-8000-000000000002', Source: 'Room', RunId: 'session-77', Key: 'sg_run_loot', Status: 'Empty',
+      Items: [], CreatedAt: '2026-11-16T10:00:00Z', DeliveredAt: null,
+    },
+    {
+      Id: 'e1e1e1e1-0000-4000-8000-000000000003', Source: 'Campaign', RunId: 'campaign-level-1', Key: 'sg_campaign_core', Status: 'Queued',
+      Items: null, CreatedAt: '2026-11-16T09:00:00Z', DeliveredAt: null,
+    },
+    {
+      Id: 'e1e1e1e1-0000-4000-8000-000000000004', Source: null, RunId: null, Key: null, Status: null,
+      Items: [{ ItemId: 436, GameItemId: null, Name: null, ImageUrl: null, Amount: null }],
+      CreatedAt: '2026-11-16T08:00:00Z', DeliveredAt: null,
+    },
+  ],
+};
+
 const STAR_RULES = JSON.stringify({
   Win: [{ Metric: 'score', Op: '>=', Value: 100 }],
   Stars: [
@@ -541,6 +565,7 @@ export function defaultRoutes() {
     'POST /Campaign/complete-level': json(CAMPAIGN_COMPLETION),
 
     'GET /Inventory': req => json(req.url.searchParams.get('all') === 'true' ? INVENTORY_ALL : INVENTORY_GAME),
+    'GET /Rewards/recent': json(RECENT_REWARDS),
 
     'GET /Ghost/pools': json(GHOST_POOLS),
     'GET /Ghost/run': json({ Run: ghostRun(), OpenMatch: { ...GHOST_MATCH, OpponentAttributes: null } }),
