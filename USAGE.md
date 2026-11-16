@@ -100,7 +100,15 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`GetGhostHistory`](#getghosthistory)
    - [`GetGhostLeaderboard`](#getghostleaderboard)
    - [`GhostError`](#ghosterror)
-9. [Client Session Methods (Reconnection)](#client-session-methods-reconnection)
+9. [Community Goal Methods](#community-goal-methods)
+   - [`GetCommunityGoal` / `GetCommunityGoalById`](#getcommunitygoal--getcommunitygoalbyid)
+   - [`GetCommunityGoalLive`](#getcommunitygoallive)
+   - [`WatchCommunityGoal`](#watchcommunitygoal)
+   - [`StartGoalAttempt`](#startgoalattempt)
+   - [`CompleteGoalAttempt`](#completegoalattempt)
+   - [`GetCommunityGoalLeaderboard`](#getcommunitygoalleaderboard)
+   - [`CommunityGoalError`](#communitygoalerror)
+10. [Client Session Methods (Reconnection)](#client-session-methods-reconnection)
    - [`UserHasUnfinishedSession_Client`](#userhasunfinishedsession_client)
    - [`ReconnectToUnfinishedSession_Client`](#reconnecttounfinishedsession_client)
    - [`CreateSession_Client`](#createsession_client)
@@ -110,14 +118,14 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`RecordCollected_Client`](#recordcollected_client)
    - [`GetCurrentSessionCollected_Client`](#getcurrentsessioncollected_client)
    - [`GetCurrentSessionEvents_Client`](#getcurrentsessionevents_client)
-10. [Dedicated Server Methods](#dedicated-server-methods)
+11. [Dedicated Server Methods](#dedicated-server-methods)
    - [`CreateSession_Server`](#createsession_server)
    - [`UserLeaveSession_Server`](#userleavesession_server)
    - [`CloseCurrentSession_Server`](#closecurrentsession_server)
    - [`FinishRoomSession_Server`](#finishroomsession_server)
    - [`RecordEvent_Server`](#recordevent_server)
    - [`GetCurrentSessionEvents_Server`](#getcurrentsessionevents_server)
-11. [FunticoClient (Event Wrapper)](#funticoclient-event-wrapper)
+12. [FunticoClient (Event Wrapper)](#funticoclient-event-wrapper)
    - [`constructor`](#constructor)
    - [`sdk`](#sdk)
    - [`on`](#on)
@@ -132,7 +140,7 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`refreshInventory`](#refreshinventory)
    - [`EVENTS`](#events)
    - [Differences from the Phaser plugin](#differences-from-the-phaser-plugin)
-12. [Utilities & Types](#utilities--types)
+13. [Utilities & Types](#utilities--types)
     - [`CryptoHelper.encrypt`](#cryptohelperencrypt)
     - [`CryptoHelper.decrypt`](#cryptohelperdecrypt)
     - [`CryptoHelper.hmacSha256`](#cryptohelperhmacsha256)
@@ -3075,6 +3083,180 @@ The error every Ghost method rejects with.
 - `MatchExpired` - The match was closed before it was reported.
 - `InvalidSignature` - The report could not be verified. Check your game's private key.
 - `InvalidOutcome` - The outcome is not `Win`, `Loss` or `Draw`.
+- `Unknown` - The response carried no recognisable code.
+
+---
+
+## Community Goal Methods
+
+Every player of your game pushes **one shared counter** toward a target: "defeat the world boss", "collect a million coins together", "drive 100 000 km". Goals of a **chain** open one after another: when a goal reaches its target, the next one opens at once. Your studio configures the chain (its key, the goals and their data, the daily attempts, the milestones); read it with `GetCommunityGoal` instead of hardcoding it.
+
+What a contribution means is entirely your game's: damage, coins, metres. The server adds every accepted contribution to the goal, ranks the players and closes the goal exactly once. Each goal carries your game's own data in `PayloadJson` (for example the boss's hull and defences).
+
+**Flow of an attempt:**
+1. `GetCommunityGoal(chainKey)`: the open goal, its live value, and the player's own state (score, place, attempts left today). Works before sign-in.
+2. `StartGoalAttempt(goal.GoalId)`: spends one of today's attempts and returns a `GoalAttempt` with a `Seed`.
+3. Play against the returned `Goal`'s `PayloadJson`, in the phase of `Attempt.MilestonesAtStart`.
+4. `CompleteGoalAttempt(attempt, contribution)`: returns what counted, the new value, the milestones crossed, the player's score and place, and whether the goal closed.
+5. While the goal is on screen, follow its value with `WatchCommunityGoal` (or poll `GetCommunityGoalLive` every `PollAfterSeconds`).
+
+**Rules worth knowing:**
+- **Attempts per day** are counted across the whole chain and reset at 00:00 UTC (`AttemptsLeftToday`, `ResetsAt`). An attempt is spent when it starts; an attempt that is never completed expires after `AttemptTtlSeconds` with no contribution.
+- **One live attempt.** Calling `StartGoalAttempt` again while an attempt is live returns that same attempt (`Resumed: true`, same `Seed`, same `MilestonesAtStart`, nothing spent). This is how a reloaded game resumes. The live attempt may belong to an earlier goal: always play against the `Goal` the start returned, in the phase of `Attempt.MilestonesAtStart` (the goal may have moved on since the start).
+- **Late attempts count.** An attempt started before its goal closed still counts in full on that goal, even if the goal closed while it was being played. The result then says `GoalClosed: true` and names `NextGoalId`.
+- **Plausibility limits.** The chain may cap a single contribution; a larger one counts up to the cap (`Capped: true`). Completing faster than `MinAttemptSeconds` (server clock) spends the attempt with nothing counted.
+- **Places** rank by score (the chain's `Scoring`: `Sum`, `Best` or `BestPerDay`), then by who reached it first. `Score` is how the player ranks; `Contributed` is how much they added to the goal. Final places are fixed when the goal is `Settled`, shortly after it closes.
+
+> **Casing note:** Community Goal responses are **PascalCase** (`Goal`, `CurrentValue`, `PayloadJson`).
+
+**Failure model.** Community Goal methods reject with a `CommunityGoalError` carrying a machine-readable `Code`, plus `NextGoalId` (for `GoalClosed`) and `ResetsAt` (for `NoAttemptsLeft`).
+
+---
+
+### `GetCommunityGoal` / `GetCommunityGoalById`
+
+The chain's open goal, or any goal by id, with the player's own state.
+
+**Signatures:**
+```typescript
+GetCommunityGoal(chainKey: string): Promise<CommunityGoalState>
+GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>
+```
+
+**CommunityGoalState Properties:**
+- `Chain` (`CommunityGoalChain`) - `Key`, `Name`, `Scoring`, `FreeAttemptsPerDay` (`0` = no limit), `MinAttemptSeconds`, `AttemptTtlSeconds`, `Milestones` (progress fractions such as `0.25`, `0.5`, `0.75`).
+- `Goal` (`CommunityGoal | null`) - The open goal (by chain key) or the requested one (by id). `null` only when the chain has never had a goal.
+- `AwaitingNext` (`boolean`) - No goal is open right now: the last one closed and the next one is not open yet. `Goal` then shows the last one.
+- `Me` (`CommunityGoalMe | null`) - `null` before sign-in.
+- `PollAfterSeconds` (`number`) - Poll the live value no more often than this.
+
+**CommunityGoal Properties:** `GoalId`, `Number` (1, 2, 3... within the chain), `Name`, `Status` (`'Open' | 'Closed' | 'Settled'`), `TargetValue`, `CurrentValue` (may pass the target: late attempts still count), `Progress` (0..1), `MilestonesPassed`, `OpenedAt`, `ClosedAt`, `ContributorCount`, `PayloadJson` (your game's data, a JSON string) and `NextGoalId` (set once the goal is no longer open and the next one exists).
+
+**CommunityGoalMe Properties:** `IsContributor`, `Score`, `Place` (`null` until the player contributes), `Contributed`, `Attempts` (completed on this goal), `AttemptsUsedToday`, `AttemptsLeftToday` (`null` = no limit), `ResetsAt`, `OpenAttempt` (the player's live attempt, if any), and for settled goals `FinalPlace` and `Bracket` (the reward bracket of that place).
+
+**Usage:**
+```javascript
+const state = await sdk.GetCommunityGoal('world-boss');
+if (state.Goal) {
+  const boss = JSON.parse(state.Goal.PayloadJson);
+  showBoss(boss, state.Goal.CurrentValue, state.Goal.TargetValue);
+}
+if (state.Me && state.Me.OpenAttempt) {
+  resumeAttempt(state.Me.OpenAttempt);
+}
+```
+
+---
+
+### `GetCommunityGoalLive`
+
+The shared state only: value, status, milestones, contributor count. Cheap and cached briefly on the server; works before sign-in.
+
+**Signature:**
+```typescript
+GetCommunityGoalLive(goalId: string): Promise<CommunityGoalLive>
+```
+
+**Returns:** `CommunityGoalLive` with `GoalId`, `Number`, `Status`, `TargetValue`, `CurrentValue`, `Progress`, `MilestonesPassed`, `ContributorCount`, `NextGoalId`, `PollAfterSeconds` and `ServerTime`.
+
+---
+
+### `WatchCommunityGoal`
+
+Polls a goal's live state at the interval the server asks for and calls `onChange` when the value, status or contributor count changes (and once at the start). In a browser, polling pauses while the page is hidden. The watch stops by itself once the goal is settled.
+
+**Signature:**
+```typescript
+WatchCommunityGoal(goalId: string, onChange: (live: CommunityGoalLive) => void, options?: WatchCommunityGoalOptions): CommunityGoalWatch
+```
+
+**Options:** `onError` (called when a poll fails; polling goes on), `minIntervalSeconds` (default `2`), `pollWhenHidden` (default `false`).
+
+**Usage:**
+```javascript
+const watch = sdk.WatchCommunityGoal(goal.GoalId, live => {
+  setHullBar(1 - live.Progress);
+  if (live.Status !== 'Open' && live.NextGoalId) showBossDown(live.NextGoalId);
+});
+// when the goal leaves the screen:
+watch.stop();
+```
+
+---
+
+### `StartGoalAttempt`
+
+Starts an attempt on an open goal, spending one of today's attempts, or returns the player's live attempt.
+
+**Signature:**
+```typescript
+StartGoalAttempt(goalId: string): Promise<GoalAttemptStart>
+```
+
+**Returns:** `GoalAttemptStart`:
+- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart` and `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in). All of them are the same on every resume.
+- `Resumed` (`boolean`) - `true` when the live attempt was returned again (nothing spent).
+- `Goal` (`CommunityGoal`) - The goal of the attempt, with its payload and its current state. On a resumed attempt the goal may have passed more milestones since the start; play in the phase of `Attempt.MilestonesAtStart`.
+- `AttemptsLeftToday`, `ResetsAt`.
+
+Rejects with `GoalClosed` (load `NextGoalId`: the next goal has its own data) or `NoAttemptsLeft` (see `ResetsAt`). Requires a signed-in player.
+
+---
+
+### `CompleteGoalAttempt`
+
+Completes an attempt with its contribution, once. A repeat returns the first result (`Replayed: true`). The result is encrypted and signed like a campaign completion.
+
+**Signature:**
+```typescript
+CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribution: number, options?: CompleteGoalAttemptOptions): Promise<GoalAttemptResult>
+```
+
+**Parameters:**
+- `attempt` - The `Attempt` returned by `StartGoalAttempt` (or `Me.OpenAttempt`).
+- `contribution` - A whole number of 0 or more. Anything else is rejected with `InvalidContribution` before a request is made.
+- `options.clientDurationSeconds`, `options.metrics` (up to 16 numbers), `options.fightHash` - Optional, for analytics and later checks.
+
+**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Place`, `AttemptsLeftToday`, `ResetsAt` and `Replayed`.
+
+**Usage:**
+```javascript
+const { Attempt, Goal } = await sdk.StartGoalAttempt(state.Goal.GoalId);
+const damage = await playBossFight(JSON.parse(Goal.PayloadJson), Attempt.MilestonesAtStart, Attempt.Seed);
+const result = await sdk.CompleteGoalAttempt(Attempt, damage);
+showHitResult(result.Accepted, result.Place, result.MilestonesCrossed);
+if (result.ClosedByMe) showFinalBlow();
+```
+
+---
+
+### `GetCommunityGoalLeaderboard`
+
+Contributors of a goal ranked by score, the player's own row and the rows around it. Works before sign-in (`Me` and `Around` are then empty).
+
+**Signature:**
+```typescript
+GetCommunityGoalLeaderboard(goalId: string, page?: number, limit?: number): Promise<CommunityGoalLeaderboard>
+```
+
+**Returns:** `CommunityGoalLeaderboard` with `GoalId`, `Items`, `Me`, `Around` (up to two rows above and below the player, the player included), `Total`, `Page`, `Limit` and `HasMore`. Each entry has `Place`, `Name`, `AvatarUrl`, `Score`, `Contributed`, `Attempts` and `IsMe`. `limit` goes up to 100.
+
+---
+
+### `CommunityGoalError`
+
+The error every Community Goal method rejects with. Besides `Code` it carries `NextGoalId` and `ResetsAt` (both `string | null`).
+
+**CommunityGoalErrorCode Values:**
+- `ChainNotFound` - No enabled chain with this key in this game.
+- `GoalNotFound` - No such goal in this game.
+- `GoalClosed` - The goal is no longer open. Load `NextGoalId` (or the chain again).
+- `NoAttemptsLeft` - Today's attempts are used. They reset at `ResetsAt`.
+- `AttemptNotFound` - No such attempt for this player.
+- `AttemptExpired` - The attempt was not completed in time; it is spent with no contribution.
+- `CompletionTooFast` - Completed faster than the chain allows; the attempt is spent with no contribution.
+- `InvalidSignature` - The result could not be verified. Check your game's private key.
+- `InvalidContribution` - The contribution is not a whole number of 0 or more.
 - `Unknown` - The response carried no recognisable code.
 
 ---

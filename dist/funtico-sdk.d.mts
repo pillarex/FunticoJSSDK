@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 81882e380ff1) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 dbd88b640a55) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -1089,6 +1089,208 @@ export interface GhostLeaderboard {
     HasMore: boolean;
 }
 /**
+ * Machine-readable reasons a Community Goal method can fail. Branch on these, never on message text.
+ * `GoalClosed` carries NextGoalId (load that goal: it has its own data); `NoAttemptsLeft` carries ResetsAt.
+ */
+export declare enum CommunityGoalErrorCode {
+    ChainNotFound = "ChainNotFound",
+    GoalNotFound = "GoalNotFound",
+    GoalClosed = "GoalClosed",
+    NoAttemptsLeft = "NoAttemptsLeft",
+    AttemptNotFound = "AttemptNotFound",
+    AttemptExpired = "AttemptExpired",
+    CompletionTooFast = "CompletionTooFast",
+    InvalidSignature = "InvalidSignature",
+    InvalidContribution = "InvalidContribution",
+    /** The response carried no recognisable code. */
+    Unknown = "Unknown"
+}
+/** Error thrown by the Community Goal methods. `instanceof CommunityGoalError` is reliable. */
+export declare class CommunityGoalError extends Error {
+    readonly Code: CommunityGoalErrorCode;
+    /** GoalClosed: the goal open in the chain now, if any. */
+    readonly NextGoalId: string | null;
+    /** NoAttemptsLeft: when the daily attempts reset (UTC midnight, ISO string). */
+    readonly ResetsAt: string | null;
+    constructor(code: CommunityGoalErrorCode, message: string, nextGoalId?: string | null, resetsAt?: string | null);
+}
+/** "Open": accepting attempts. "Closed": target reached, late attempts may still land. "Settled": final places fixed. */
+export type CommunityGoalStatus = 'Open' | 'Closed' | 'Settled';
+/** How a player's contributions form their place: all summed, the single best, or the best of each UTC day summed. */
+export type CommunityGoalScoring = 'Sum' | 'Best' | 'BestPerDay';
+/** A chain of goals and its rules, as far as the game needs them. */
+export interface CommunityGoalChain {
+    Key: string;
+    Name: string;
+    Scoring: CommunityGoalScoring;
+    /** Free attempts per player per UTC day across the whole chain; 0 means no limit. */
+    FreeAttemptsPerDay: number;
+    /** Shortest accepted attempt (server clock). */
+    MinAttemptSeconds: number;
+    /** An attempt not completed within this time expires with no contribution. */
+    AttemptTtlSeconds: number;
+    /** Progress fractions (0 < f < 1) worth reacting to, ascending. */
+    Milestones: number[];
+}
+/** One goal of a chain and its shared state. */
+export interface CommunityGoal {
+    GoalId: string;
+    /** 1, 2, 3... within the chain. */
+    Number: number;
+    Name: string;
+    Status: CommunityGoalStatus;
+    TargetValue: number;
+    /** Sum of every accepted contribution; may pass TargetValue. */
+    CurrentValue: number;
+    /** CurrentValue / TargetValue, at most 1. */
+    Progress: number;
+    MilestonesPassed: number[];
+    OpenedAt: string;
+    ClosedAt: string | null;
+    ContributorCount: number;
+    /** Your game's data for this goal, exactly as configured (a JSON string). */
+    PayloadJson: string;
+    /** When the goal is no longer open: the goal opened after it, if any. */
+    NextGoalId: string | null;
+}
+/** A started attempt. Pass it to CompleteGoalAttempt. */
+export interface GoalAttempt {
+    AttemptId: string;
+    GoalId: string;
+    /** Server-chosen random number; the same every time the attempt is resumed. */
+    Seed: number;
+    StartedAt: string;
+    ExpiresAt: string;
+    /** The goal's value when the attempt started; the same every time the attempt is resumed. */
+    GoalValueAtStart: number;
+    /** Milestones the goal had passed when the attempt started: the phase to play the attempt in. */
+    MilestonesAtStart: number[];
+}
+/** The signed-in player's own state in a chain and on a goal. */
+export interface CommunityGoalMe {
+    IsContributor: boolean;
+    Score: number;
+    /** Null when not a contributor. */
+    Place: number | null;
+    /** How much the player's contributions added to the goal. */
+    Contributed: number;
+    Attempts: number;
+    AttemptsUsedToday: number;
+    /** Null when the chain has no daily limit. */
+    AttemptsLeftToday: number | null;
+    ResetsAt: string;
+    /** The player's live attempt (possibly on another goal): finish it before starting a new one. */
+    OpenAttempt: GoalAttempt | null;
+    /** Settled goals: the final place and the reward bracket it fell into. */
+    FinalPlace: number | null;
+    Bracket: string | null;
+}
+export interface CommunityGoalState {
+    Chain: CommunityGoalChain;
+    /** The open goal (or the requested one); null when the chain has never had a goal. */
+    Goal: CommunityGoal | null;
+    /** No goal is open right now: the last one closed and the next is not open yet. */
+    AwaitingNext: boolean;
+    /** Null when no player is signed in. */
+    Me: CommunityGoalMe | null;
+    /** Poll the live state no more often than this. */
+    PollAfterSeconds: number;
+    ServerTime: string;
+}
+/** The shared state only: what to poll. */
+export interface CommunityGoalLive {
+    GoalId: string;
+    Number: number;
+    Status: CommunityGoalStatus;
+    TargetValue: number;
+    CurrentValue: number;
+    Progress: number;
+    MilestonesPassed: number[];
+    ContributorCount: number;
+    NextGoalId: string | null;
+    PollAfterSeconds: number;
+    ServerTime: string;
+}
+export interface GoalAttemptStart {
+    Attempt: GoalAttempt;
+    /** True when this is the player's already-live attempt returned again (no attempt spent). */
+    Resumed: boolean;
+    /**
+     * The goal the attempt belongs to: its payload and current state. Play in the phase of
+     * Attempt.MilestonesAtStart - on a resumed attempt the goal may have moved on since the start.
+     */
+    Goal: CommunityGoal;
+    AttemptsLeftToday: number | null;
+    ResetsAt: string;
+}
+export interface CompleteGoalAttemptOptions {
+    /** Your own measure of the attempt; informative only. */
+    clientDurationSeconds?: number;
+    /** Up to 16 numbers for analytics. */
+    metrics?: Record<string, number>;
+    /** A hash of the attempt, up to 128 characters. */
+    fightHash?: string;
+}
+export interface GoalAttemptResult {
+    AttemptId: string;
+    GoalId: string;
+    /** True when this answers a repeat of an already completed attempt. */
+    Replayed: boolean;
+    Reported: number;
+    /** What counted: Reported cut down to the chain's plausibility limits. */
+    Accepted: number;
+    Capped: boolean;
+    ValueBefore: number;
+    ValueAfter: number;
+    TargetValue: number;
+    /** Milestones this contribution carried the goal past. */
+    MilestonesCrossed: number[];
+    GoalStatus: CommunityGoalStatus;
+    /** The goal is closed now (by this contribution or before it). */
+    GoalClosed: boolean;
+    /** This contribution reached the target. */
+    ClosedByMe: boolean;
+    NextGoalId: string | null;
+    Score: number;
+    ScoreImproved: boolean;
+    Place: number | null;
+    AttemptsLeftToday: number | null;
+    ResetsAt: string;
+}
+export interface CommunityGoalLeaderboardEntry {
+    Place: number;
+    Name: string | null;
+    AvatarUrl: string | null;
+    Score: number;
+    Contributed: number;
+    Attempts: number;
+    IsMe: boolean;
+}
+export interface CommunityGoalLeaderboard {
+    GoalId: string;
+    Items: CommunityGoalLeaderboardEntry[];
+    /** The player's own row, wherever it is; null until they contribute (or when not signed in). */
+    Me: CommunityGoalLeaderboardEntry | null;
+    /** Up to two rows above and below the player, the player included. */
+    Around: CommunityGoalLeaderboardEntry[];
+    Total: number;
+    Page: number;
+    Limit: number;
+    HasMore: boolean;
+}
+export interface WatchCommunityGoalOptions {
+    /** Called when a poll fails; polling goes on. */
+    onError?: (error: unknown) => void;
+    /** Never poll more often than this, whatever the server asks. Default 2. */
+    minIntervalSeconds?: number;
+    /** Keep polling while the page is hidden. Default false (polling pauses in the background). */
+    pollWhenHidden?: boolean;
+}
+/** Handle of a running WatchCommunityGoal. */
+export interface CommunityGoalWatch {
+    stop(): void;
+}
+/**
  * Cryptography helper class leveraging the browser Web Crypto API.
  * Produces the encrypted payloads and signatures the Funtico API expects.
  */
@@ -1616,6 +1818,44 @@ export declare class FunticoSDK {
     private ghostRunCall;
     private mapGhostMatch;
     private throwGhostError;
+    /** The chain's open goal (or its latest while the next one is not open yet) and the player's own state. */
+    GetCommunityGoal(chainKey: string): Promise<CommunityGoalState>;
+    /** Any goal of the game by id, open or past (e.g. the one NextGoalId names). */
+    GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>;
+    /** The shared state only. Cheap; poll it no more often than PollAfterSeconds (or use WatchCommunityGoal). */
+    GetCommunityGoalLive(goalId: string): Promise<CommunityGoalLive>;
+    /**
+     * Starts an attempt on an open goal, spending one of today's attempts. If the player already has
+     * a live attempt in the chain, that one is returned again (Resumed = true, nothing spent) - also
+     * when it belongs to another goal, so always play against the returned Goal.
+     *
+     * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt).
+     */
+    StartGoalAttempt(goalId: string): Promise<GoalAttemptStart>;
+    /**
+     * Completes an attempt with its contribution, once: a repeat returns the first result
+     * (Replayed = true). The result is encrypted and signed like a campaign completion. An attempt
+     * started before its goal closed still counts in full.
+     *
+     * Rejects with CommunityGoalError: `AttemptExpired`, `CompletionTooFast` (the attempt is used),
+     * `InvalidContribution`.
+     */
+    CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribution: number, options?: CompleteGoalAttemptOptions): Promise<GoalAttemptResult>;
+    /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
+    GetCommunityGoalLeaderboard(goalId: string, page?: number, limit?: number): Promise<CommunityGoalLeaderboard>;
+    /**
+     * Polls a goal's live state at the interval the server asks for and calls onChange whenever the
+     * value, status or contributor count changes (and once at the start). Pauses while the page is
+     * hidden, and stops by itself once the goal is settled (it never changes again). Call stop() when
+     * the goal leaves the screen.
+     */
+    WatchCommunityGoal(goalId: string, onChange: (live: CommunityGoalLive) => void, options?: WatchCommunityGoalOptions): CommunityGoalWatch;
+    /** X-User-Key always; the player's token only when signed in (Community Goal reads work before sign-in). */
+    private getOptionalAuthHeaders;
+    private mapCommunityGoalState;
+    private mapGoalAttempt;
+    private mapCommunityGoal;
+    private throwCommunityGoalError;
     /**
      * Registers a new multiplayer session on the API from a Dedicated Game Server.
      */

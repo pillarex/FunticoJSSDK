@@ -11,6 +11,7 @@ import {
   PUB, PRIV, API, PLATFORM_TOKEN, JWT, USER_ID, PLATFORM_ID, RIVAL_ID, config,
   BALANCE, ROOM_A, ROOM_B, ROOM_C, ROOM_D, VOUCHERS, VOUCHERS_SPENT, LEADERS, TOURNAMENT_ID, TOURNAMENT_LEADERBOARD, TOURNAMENT_HISTORY,
   CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession, GHOST_MATCH_ID,
+  GOAL_CHAIN_KEY, GOAL_ID, NEXT_GOAL_ID, GOAL_ATTEMPT_ID, GOAL_ATTEMPT, GOAL_ATTEMPT_START, COMMUNITY_GOAL_LIVE, communityGoal,
 } from './wire.mjs';
 
 const tokenConfig = (mod, extra) => config(mod, { userToken: PLATFORM_TOKEN, ...extra });
@@ -869,6 +870,128 @@ export const SCENARIOS = [
       ctx.route('GET /Ghost/run', json({}));
       const empty = await ctx.call('GetGhostRun', 'arena');
       ctx.check(empty.Run === null && empty.OpenMatch === null, 'missing run fields become null');
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
+    name: 'Community goal: reads before sign-in, signed attempt completion, live, leaderboard, watch, error codes',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', config(mod));
+
+      // Before sign-in: reads go out with the game key only.
+      const anon = await ctx.call('GetCommunityGoal', GOAL_CHAIN_KEY);
+      ctx.check(lastRequest(ctx).url === `${API}/CommunityGoal/world-boss`, 'chain url');
+      ctx.check(lastRequest(ctx).headers['X-User-Key'] === PUB && lastRequest(ctx).headers.Authorization === undefined, 'anonymous read: no token');
+      ctx.check(anon.Goal.GoalId === GOAL_ID && Array.isArray(anon.Goal.MilestonesPassed) && anon.Goal.MilestonesPassed.length === 0, 'null MilestonesPassed becomes []');
+      ctx.check(anon.Chain.Milestones.length === 3 && anon.Me.AttemptsLeftToday === 1 && anon.Me.OpenAttempt === null, 'state mapped');
+      await ctx.call('StartGoalAttempt', GOAL_ID);
+      ctx.check(/not authenticated/.test(ctx.lastError()?.message), 'attempts need sign-in');
+
+      await ctx.call('Authentication', PLATFORM_TOKEN);
+      const byId = await ctx.call('GetCommunityGoalById', GOAL_ID);
+      ctx.check(lastRequest(ctx).headers.Authorization === `Bearer ${JWT}` && byId.Me === null, 'signed-in read sends the token; Me null mapped');
+      ctx.route('GET /CommunityGoal/key%20with%20spaces%2F%26', json({ Error: 'ChainNotFound', Message: 'No chain' }, 400));
+      await ctx.call('GetCommunityGoal', 'key with spaces/&');
+      ctx.check(lastRequest(ctx).url.endsWith('/CommunityGoal/key%20with%20spaces%2F%26'), 'chain key encoded into one path segment');
+
+      const live = await ctx.call('GetCommunityGoalLive', GOAL_ID);
+      ctx.check(live.CurrentValue === 701500 && live.PollAfterSeconds === 7 && live.NextGoalId === null, 'live mapped');
+
+      const start = await ctx.call('StartGoalAttempt', GOAL_ID);
+      ctx.check(lastRequest(ctx).method === 'POST' && lastRequest(ctx).url.endsWith(`/CommunityGoal/attempt/start?goalId=${GOAL_ID}`), 'start url');
+      ctx.check(start.Attempt.AttemptId === GOAL_ATTEMPT_ID && start.Goal.PayloadJson.includes('Warden') && !start.Resumed, 'start mapped');
+      ctx.check(start.Attempt.GoalValueAtStart === 700000 && start.Attempt.MilestonesAtStart[0] === 0.25, 'start snapshot mapped');
+
+      const result = await ctx.call('CompleteGoalAttempt', start.Attempt, 5000000, { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1' });
+      ctx.check(lastBody(ctx).AttemptId === GOAL_ATTEMPT_ID && /^[0-9a-f]{64}$/.test(lastBody(ctx).Hash) && !lastRequest(ctx).body.includes('5000000'), 'completion travels encrypted');
+      ctx.check(result.Accepted === 1500000 && result.Capped && result.MilestonesCrossed.length === 2 && result.Place === 1, 'completion mapped');
+      await ctx.call('CompleteGoalAttempt', { AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID.toUpperCase() }, 0);
+      ctx.check(lastBody(ctx).AttemptId === GOAL_ATTEMPT_ID, 'attempt id lowercased');
+
+      const before = ctx.requests.length;
+      for (const bad of [-1, 1.5, Number.NaN, 2 ** 60]) {
+        await ctx.call('CompleteGoalAttempt', GOAL_ATTEMPT, bad);
+        ctx.check(ctx.lastError()?.code === mod.CommunityGoalErrorCode.InvalidContribution, `contribution ${bad} refused`);
+      }
+      await ctx.call('CompleteGoalAttempt', null, 10);
+      ctx.check(ctx.lastError()?.code === mod.CommunityGoalErrorCode.AttemptNotFound, 'missing attempt refused');
+      ctx.expectRequests(before, 'invalid completions make no request');
+
+      const board = await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID);
+      ctx.check(lastRequest(ctx).url.endsWith(`/CommunityGoal/goal/${GOAL_ID}/leaderboard?page=1&limit=20`), 'leaderboard defaults');
+      ctx.check(board.Items.length === 2 && board.Items[1].Name === null && board.Me.Place === 4 && board.Around.length === 3, 'leaderboard mapped');
+      await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID, 3, 50);
+      ctx.check(lastRequest(ctx).url.endsWith('?page=3&limit=50'), 'leaderboard paging');
+
+      // Watch: the first poll fires at once and reports; stop() ends it before any timer runs.
+      const seen = [];
+      const watch = await ctx.step('WatchCommunityGoal', () => {
+        let resolveFirst;
+        const first = new Promise(resolve => { resolveFirst = resolve; });
+        const handle = ctx.sdk.WatchCommunityGoal(GOAL_ID, liveState => { seen.push(liveState.CurrentValue); resolveFirst(); });
+        return first.then(() => { handle.stop(); return seen.slice(); });
+      });
+      ctx.check(watch.length === 1 && watch[0] === 701500, 'watch reported the first state');
+      ctx.check(lastRequest(ctx).url.endsWith(`/CommunityGoal/goal/${GOAL_ID}/live`), 'watch polls the live endpoint');
+
+      const settled = await ctx.step('WatchCommunityGoal settled', () => new Promise(resolve => {
+        ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}/live`, json({ ...COMMUNITY_GOAL_LIVE, Status: 'Settled', NextGoalId: NEXT_GOAL_ID }));
+        ctx.sdk.WatchCommunityGoal(GOAL_ID, liveState => resolve(liveState.Status));
+      }));
+      ctx.check(settled === 'Settled', 'a settled goal is reported, then the watch stops by itself');
+
+      const failures = [
+        ['POST /CommunityGoal/attempt/start', 'StartGoalAttempt', [GOAL_ID],
+          json({ Error: 'GoalClosed', Message: 'Closed', NextGoalId: NEXT_GOAL_ID, ResetsAt: null }, 400), mod.CommunityGoalErrorCode.GoalClosed],
+        ['POST /CommunityGoal/attempt/start', 'StartGoalAttempt', [GOAL_ID],
+          json({ Error: 'NoAttemptsLeft', Message: 'Used', ResetsAt: '2026-11-17T00:00:00Z' }, 400), mod.CommunityGoalErrorCode.NoAttemptsLeft],
+        ['POST /CommunityGoal/attempt/complete', 'CompleteGoalAttempt', [GOAL_ATTEMPT, 1],
+          json({ Error: 'CompletionTooFast', Message: 'Too fast' }, 400), mod.CommunityGoalErrorCode.CompletionTooFast],
+        ['POST /CommunityGoal/attempt/complete', 'CompleteGoalAttempt', [GOAL_ATTEMPT, 1],
+          json({ Error: 'AttemptExpired', Message: 'Expired' }, 400), mod.CommunityGoalErrorCode.AttemptExpired],
+        [`GET /CommunityGoal/${GOAL_CHAIN_KEY}`, 'GetCommunityGoal', [GOAL_CHAIN_KEY],
+          json({ Error: 'ChainNotFound', Message: 'No chain' }, 400), mod.CommunityGoalErrorCode.ChainNotFound],
+        [`GET /CommunityGoal/goal/${GOAL_ID}/live`, 'GetCommunityGoalLive', [GOAL_ID],
+          json({ Error: 'BrandNewCode', Message: 'Future' }, 400), mod.CommunityGoalErrorCode.Unknown],
+        [`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, 'GetCommunityGoalLeaderboard', [GOAL_ID], text('Bad Gateway', 502), mod.CommunityGoalErrorCode.Unknown],
+      ];
+      for (const [route, method, args, failure, code] of failures) {
+        ctx.route(route, failure);
+        await ctx.call(method, ...args);
+        ctx.check(ctx.lastError()?.isCommunityGoalError === true && ctx.lastError()?.code === code, `${method}: ${code}`);
+      }
+      ctx.route('POST /CommunityGoal/attempt/start', json({ Error: 'GoalClosed', Message: 'Closed', NextGoalId: NEXT_GOAL_ID }, 400));
+      await ctx.call('StartGoalAttempt', GOAL_ID);
+      ctx.check(ctx.lastError()?.nextGoalId === NEXT_GOAL_ID, 'GoalClosed carries NextGoalId');
+      ctx.route('POST /CommunityGoal/attempt/start', json({ Error: 'NoAttemptsLeft', Message: 'Used', ResetsAt: '2026-11-17T00:00:00Z' }, 400));
+      await ctx.call('StartGoalAttempt', GOAL_ID);
+      ctx.check(ctx.lastError()?.resetsAt === '2026-11-17T00:00:00Z' && ctx.lastError()?.nextGoalId === null, 'NoAttemptsLeft carries ResetsAt');
+
+      ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}`, json({ Chain: { Key: GOAL_CHAIN_KEY, Milestones: null }, Goal: null, AwaitingNext: true, Me: null, PollAfterSeconds: 5 }));
+      const awaiting = await ctx.call('GetCommunityGoal', GOAL_CHAIN_KEY);
+      ctx.check(awaiting.Goal === null && awaiting.AwaitingNext && awaiting.Chain.Milestones.length === 0, 'chain awaiting its next goal');
+      ctx.route('POST /CommunityGoal/attempt/start', json({
+        ...GOAL_ATTEMPT_START, Resumed: true,
+        Attempt: { ...GOAL_ATTEMPT, MilestonesAtStart: null },
+        Goal: communityGoal({ MilestonesPassed: null, NextGoalId: null }),
+      }));
+      const resumed = await ctx.call('StartGoalAttempt', GOAL_ID);
+      ctx.check(resumed.Resumed && resumed.Goal.MilestonesPassed.length === 0 && resumed.Attempt.MilestonesAtStart.length === 0, 'resumed attempt mapped, null lists become []');
+      ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}`, json({
+        Chain: { Key: GOAL_CHAIN_KEY, Milestones: [0.5] }, Goal: communityGoal(), AwaitingNext: false, PollAfterSeconds: 5,
+        Me: { IsContributor: false, Score: 0, Place: null, Contributed: 0, Attempts: 0, AttemptsUsedToday: 1, AttemptsLeftToday: 2,
+          ResetsAt: '2026-11-17T00:00:00Z', OpenAttempt: { ...GOAL_ATTEMPT, MilestonesAtStart: null } },
+      }));
+      const withOpen = await ctx.call('GetCommunityGoal', GOAL_CHAIN_KEY);
+      ctx.check(withOpen.Me.OpenAttempt.GoalValueAtStart === 700000 && withOpen.Me.OpenAttempt.MilestonesAtStart.length === 0 && withOpen.Me.FinalPlace === null, 'open attempt in Me mapped');
+      ctx.route('POST /CommunityGoal/attempt/complete', json({ AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Replayed: true, Accepted: 0 }));
+      const sparse = await ctx.call('CompleteGoalAttempt', GOAL_ATTEMPT, 0);
+      ctx.check(sparse.Replayed && sparse.MilestonesCrossed.length === 0 && sparse.NextGoalId === null && sparse.Place === null, 'missing result fields become []/null');
+      ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, json({ GoalId: GOAL_ID, Total: 0, Page: 1, Limit: 20, HasMore: false }));
+      const emptyBoard = await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID);
+      ctx.check(emptyBoard.Items.length === 0 && emptyBoard.Around.length === 0 && emptyBoard.Me === null, 'missing leaderboard lists become []/null');
     },
   },
 

@@ -402,6 +402,63 @@ export const GHOST_LEADERBOARD = {
   Page: 1, Limit: 2, HasMore: true,
 };
 
+// ---- community goals (PascalCase) -------------------------------------------------------------
+
+export const GOAL_CHAIN_KEY = 'world-boss';
+export const GOAL_ID = '5a6b7c8d-1e2f-4a3b-9c4d-5e6f7a8b9c0d';
+export const NEXT_GOAL_ID = '6b7c8d9e-2f3a-4b4c-8d5e-6f7a8b9c0d1e';
+export const GOAL_ATTEMPT_ID = '3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
+
+export function communityGoal(overrides = {}) {
+  return {
+    GoalId: GOAL_ID, Number: 3, Name: 'Warden', Status: 'Open', TargetValue: 2500000, CurrentValue: 700000, Progress: 0.28,
+    MilestonesPassed: [0.25], OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: null, ContributorCount: 41,
+    PayloadJson: '{"boss":"Warden","hull":2500000}', NextGoalId: null, ...overrides,
+  };
+}
+
+export const GOAL_ATTEMPT = {
+  AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Seed: 1234567, StartedAt: '2026-11-16T10:00:00Z', ExpiresAt: '2026-11-16T10:10:00Z',
+  GoalValueAtStart: 700000, MilestonesAtStart: [0.25],
+};
+
+/** GET /CommunityGoal/world-boss for a signed-in player; an array the server may omit comes back null. */
+export const COMMUNITY_GOAL_STATE = {
+  Chain: { Key: GOAL_CHAIN_KEY, Name: 'World Boss', Scoring: 'BestPerDay', FreeAttemptsPerDay: 3, MinAttemptSeconds: 15, AttemptTtlSeconds: 600, Milestones: [0.25, 0.5, 0.75] },
+  Goal: communityGoal({ MilestonesPassed: null }),
+  AwaitingNext: false,
+  Me: {
+    IsContributor: true, Score: 1500000, Place: 4, Contributed: 2200000, Attempts: 2, AttemptsUsedToday: 2, AttemptsLeftToday: 1,
+    ResetsAt: '2026-11-17T00:00:00Z', OpenAttempt: null, FinalPlace: null, Bracket: null,
+  },
+  PollAfterSeconds: 5, ServerTime: '2026-11-16T10:00:00Z',
+};
+
+export const COMMUNITY_GOAL_LIVE = {
+  GoalId: GOAL_ID, Number: 3, Status: 'Open', TargetValue: 2500000, CurrentValue: 701500, Progress: 0.2806, MilestonesPassed: [0.25],
+  ContributorCount: 42, NextGoalId: null, PollAfterSeconds: 7, ServerTime: '2026-11-16T10:00:05Z',
+};
+
+export const GOAL_ATTEMPT_START = { Attempt: GOAL_ATTEMPT, Resumed: false, Goal: communityGoal(), AttemptsLeftToday: 0, ResetsAt: '2026-11-17T00:00:00Z' };
+
+export const GOAL_ATTEMPT_RESULT = {
+  AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Replayed: false, Reported: 5000000, Accepted: 1500000, Capped: true,
+  ValueBefore: 700000, ValueAfter: 2200000, TargetValue: 2500000, MilestonesCrossed: [0.5, 0.75], GoalStatus: 'Open',
+  GoalClosed: false, ClosedByMe: false, NextGoalId: null, Score: 1500000, ScoreImproved: true, Place: 1,
+  AttemptsLeftToday: 0, ResetsAt: '2026-11-17T00:00:00Z',
+};
+
+const goalEntry = (Place, Name, Score, IsMe = false) => ({ Place, Name, AvatarUrl: null, Score, Contributed: Score, Attempts: 3, IsMe });
+
+/** GET /CommunityGoal/goal/{id}/leaderboard: page 1 of many, the player 4th with the rows around. */
+export const GOAL_LEADERBOARD = {
+  GoalId: GOAL_ID,
+  Items: [goalEntry(1, 'Rival', 2100000), goalEntry(2, null, 1800000)],
+  Me: goalEntry(4, 'Tester', 1500000, true),
+  Around: [goalEntry(2, null, 1800000), goalEntry(3, 'Ace', 1600000), goalEntry(4, 'Tester', 1500000, true)],
+  Total: 42, Page: 1, Limit: 2, HasMore: true,
+};
+
 /** GET /Rewards/recent: a delivered random drop, an empty draw, a queued event reward with nulls. */
 export const RECENT_REWARDS = {
   Rewards: [
@@ -581,6 +638,13 @@ export function defaultRoutes() {
     'GET /Ghost/report-summary': json(GHOST_SUMMARY),
     'GET /Ghost/history': json(GHOST_HISTORY),
     'GET /Ghost/leaderboard': json(GHOST_LEADERBOARD),
+
+    [`GET /CommunityGoal/${GOAL_CHAIN_KEY}`]: json(COMMUNITY_GOAL_STATE),
+    [`GET /CommunityGoal/goal/${GOAL_ID}`]: json({ ...COMMUNITY_GOAL_STATE, Me: null }),
+    [`GET /CommunityGoal/goal/${GOAL_ID}/live`]: json(COMMUNITY_GOAL_LIVE),
+    [`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`]: json(GOAL_LEADERBOARD),
+    'POST /CommunityGoal/attempt/start': json(GOAL_ATTEMPT_START),
+    'POST /CommunityGoal/attempt/complete': json(GOAL_ATTEMPT_RESULT),
 
     'GET /Session/any-unfinished-sessions': json({ SavedSessions: [SAVED_SESSION] }),
     'GET /Session/reconnect-to-session': json(SAVED_SESSION),

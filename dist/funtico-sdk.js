@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 81882e380ff1) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 dbd88b640a55) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 (function (root, factory) {
@@ -314,6 +314,35 @@ var GhostOutcome;
     GhostOutcome["Loss"] = "Loss";
     GhostOutcome["Draw"] = "Draw";
 })(GhostOutcome || (GhostOutcome = {}));
+/**
+ * Machine-readable reasons a Community Goal method can fail. Branch on these, never on message text.
+ * `GoalClosed` carries NextGoalId (load that goal: it has its own data); `NoAttemptsLeft` carries ResetsAt.
+ */
+var CommunityGoalErrorCode;
+(function (CommunityGoalErrorCode) {
+    CommunityGoalErrorCode["ChainNotFound"] = "ChainNotFound";
+    CommunityGoalErrorCode["GoalNotFound"] = "GoalNotFound";
+    CommunityGoalErrorCode["GoalClosed"] = "GoalClosed";
+    CommunityGoalErrorCode["NoAttemptsLeft"] = "NoAttemptsLeft";
+    CommunityGoalErrorCode["AttemptNotFound"] = "AttemptNotFound";
+    CommunityGoalErrorCode["AttemptExpired"] = "AttemptExpired";
+    CommunityGoalErrorCode["CompletionTooFast"] = "CompletionTooFast";
+    CommunityGoalErrorCode["InvalidSignature"] = "InvalidSignature";
+    CommunityGoalErrorCode["InvalidContribution"] = "InvalidContribution";
+    /** The response carried no recognisable code. */
+    CommunityGoalErrorCode["Unknown"] = "Unknown";
+})(CommunityGoalErrorCode || (CommunityGoalErrorCode = {}));
+/** Error thrown by the Community Goal methods. `instanceof CommunityGoalError` is reliable. */
+class CommunityGoalError extends Error {
+    constructor(code, message, nextGoalId = null, resetsAt = null) {
+        super(message);
+        Object.setPrototypeOf(this, CommunityGoalError.prototype);
+        this.name = 'CommunityGoalError';
+        this.Code = code;
+        this.NextGoalId = nextGoalId;
+        this.ResetsAt = resetsAt;
+    }
+}
 /**
  * Cryptography helper class leveraging the browser Web Crypto API.
  * Produces the encrypted payloads and signatures the Funtico API expects.
@@ -2276,6 +2305,223 @@ class FunticoSDK {
         }
         throw new GhostError(code, `${fallback}: ${message}`);
     }
+    /* ================= Community Goal Methods =================
+     *
+     * Every player of the game pushes one shared counter toward a target ("defeat the world boss",
+     * "collect a million coins"). Goals of a chain open one after another. A player starts an attempt
+     * (one of the day's attempts), plays, and completes it with a contribution: a whole number of
+     * whatever the game counts. What a contribution means, and the goal's own data (PayloadJson), are
+     * entirely the game's. Reads work before sign-in; attempts need a signed-in player.
+     */
+    /** The chain's open goal (or its latest while the next one is not open yet) and the player's own state. */
+    async GetCommunityGoal(chainKey) {
+        const response = await fetch(`${this.apiUri}/CommunityGoal/${encodeURIComponent(chainKey)}`, {
+            headers: this.getOptionalAuthHeaders()
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to fetch the community goal");
+        return this.mapCommunityGoalState(await response.json());
+    }
+    /** Any goal of the game by id, open or past (e.g. the one NextGoalId names). */
+    async GetCommunityGoalById(goalId) {
+        const response = await fetch(`${this.apiUri}/CommunityGoal/goal/${encodeURIComponent(goalId)}`, {
+            headers: this.getOptionalAuthHeaders()
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to fetch the community goal");
+        return this.mapCommunityGoalState(await response.json());
+    }
+    /** The shared state only. Cheap; poll it no more often than PollAfterSeconds (or use WatchCommunityGoal). */
+    async GetCommunityGoalLive(goalId) {
+        const response = await fetch(`${this.apiUri}/CommunityGoal/goal/${encodeURIComponent(goalId)}/live`, {
+            headers: this.getOptionalAuthHeaders()
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to fetch the live goal state");
+        const wire = await response.json();
+        return { ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], NextGoalId: wire.NextGoalId ?? null };
+    }
+    /**
+     * Starts an attempt on an open goal, spending one of today's attempts. If the player already has
+     * a live attempt in the chain, that one is returned again (Resumed = true, nothing spent) - also
+     * when it belongs to another goal, so always play against the returned Goal.
+     *
+     * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt).
+     */
+    async StartGoalAttempt(goalId) {
+        const response = await fetch(`${this.apiUri}/CommunityGoal/attempt/start?goalId=${encodeURIComponent(goalId)}`, {
+            method: "POST",
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to start a goal attempt");
+        const wire = await response.json();
+        return { ...wire, Attempt: this.mapGoalAttempt(wire.Attempt), Goal: this.mapCommunityGoal(wire.Goal) };
+    }
+    /**
+     * Completes an attempt with its contribution, once: a repeat returns the first result
+     * (Replayed = true). The result is encrypted and signed like a campaign completion. An attempt
+     * started before its goal closed still counts in full.
+     *
+     * Rejects with CommunityGoalError: `AttemptExpired`, `CompletionTooFast` (the attempt is used),
+     * `InvalidContribution`.
+     */
+    async CompleteGoalAttempt(attempt, contribution, options = {}) {
+        const headers = this.getAuthHeaders();
+        if (!attempt || !attempt.AttemptId || !attempt.GoalId) {
+            throw new CommunityGoalError(CommunityGoalErrorCode.AttemptNotFound, "Pass the attempt returned by StartGoalAttempt.");
+        }
+        if (!Number.isSafeInteger(contribution) || contribution < 0) {
+            throw new CommunityGoalError(CommunityGoalErrorCode.InvalidContribution, `Contribution must be a whole number of 0 or more, got ${contribution}.`);
+        }
+        const id = String(attempt.AttemptId).toLowerCase();
+        const plainText = JSON.stringify({
+            AttemptId: id,
+            GoalId: String(attempt.GoalId).toLowerCase(),
+            Contribution: contribution,
+            ClientDurationSeconds: options.clientDurationSeconds ?? null,
+            Metrics: options.metrics ?? null,
+            FightHash: options.fightHash ?? null
+        });
+        const encryptionKey = id.substring(0, 8) + this.config.privateGameKey.substring(0, 8);
+        const encryptedData = await CryptoHelper.encrypt(plainText, encryptionKey);
+        const hash = await CryptoHelper.hmacSha256(encryptedData, this.config.privateGameKey.substring(8));
+        const response = await fetch(`${this.apiUri}/CommunityGoal/attempt/complete`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ AttemptId: id, EncryptedData: encryptedData, Hash: hash })
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to complete the goal attempt");
+        const wire = await response.json();
+        return { ...wire, MilestonesCrossed: wire.MilestonesCrossed ?? [], NextGoalId: wire.NextGoalId ?? null, Place: wire.Place ?? null };
+    }
+    /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
+    async GetCommunityGoalLeaderboard(goalId, page = 1, limit = 20) {
+        const query = `page=${page}&limit=${limit}`;
+        const response = await fetch(`${this.apiUri}/CommunityGoal/goal/${encodeURIComponent(goalId)}/leaderboard?${query}`, {
+            headers: this.getOptionalAuthHeaders()
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to fetch the goal leaderboard");
+        const wire = await response.json();
+        return { ...wire, Items: wire.Items ?? [], Around: wire.Around ?? [], Me: wire.Me ?? null };
+    }
+    /**
+     * Polls a goal's live state at the interval the server asks for and calls onChange whenever the
+     * value, status or contributor count changes (and once at the start). Pauses while the page is
+     * hidden, and stops by itself once the goal is settled (it never changes again). Call stop() when
+     * the goal leaves the screen.
+     */
+    WatchCommunityGoal(goalId, onChange, options = {}) {
+        const minInterval = Math.max(1, options.minIntervalSeconds ?? 2);
+        const hasDocument = typeof document !== 'undefined' && typeof document.addEventListener === 'function';
+        let stopped = false;
+        let running = false;
+        let timer = null;
+        let interval = 5;
+        let last = null;
+        const isHidden = () => !options.pollWhenHidden && hasDocument && document.hidden === true;
+        const stop = () => {
+            stopped = true;
+            if (timer !== null)
+                clearTimeout(timer);
+            timer = null;
+            if (hasDocument)
+                document.removeEventListener('visibilitychange', onVisibility);
+        };
+        const tick = async () => {
+            timer = null;
+            if (stopped || running)
+                return;
+            if (isHidden())
+                return; // resumed by the visibilitychange listener
+            running = true;
+            try {
+                const live = await this.GetCommunityGoalLive(goalId);
+                if (stopped)
+                    return;
+                if (live.PollAfterSeconds > 0)
+                    interval = live.PollAfterSeconds;
+                const key = `${live.Status}|${live.CurrentValue}|${live.ContributorCount}|${live.NextGoalId}`;
+                if (key !== last) {
+                    last = key;
+                    onChange(live);
+                }
+                if (live.Status === 'Settled') {
+                    stop();
+                    return;
+                }
+            }
+            catch (error) {
+                if (!stopped)
+                    options.onError?.(error);
+            }
+            finally {
+                running = false;
+            }
+            if (!stopped)
+                timer = setTimeout(() => void tick(), Math.max(minInterval, interval) * 1000);
+        };
+        function onVisibility() {
+            if (!stopped && !isHidden() && timer === null && !running)
+                void tick();
+        }
+        if (hasDocument)
+            document.addEventListener('visibilitychange', onVisibility);
+        void tick();
+        return { stop };
+    }
+    /** X-User-Key always; the player's token only when signed in (Community Goal reads work before sign-in). */
+    getOptionalAuthHeaders() {
+        const headers = { "X-User-Key": this.config.publicGameKey };
+        if (this.jwtToken) {
+            headers["Authorization"] = `Bearer ${this.jwtToken}`;
+        }
+        return headers;
+    }
+    mapCommunityGoalState(wire) {
+        const me = wire.Me ?? null;
+        return {
+            ...wire,
+            Chain: { ...wire.Chain, Milestones: wire.Chain?.Milestones ?? [] },
+            Goal: this.mapCommunityGoal(wire.Goal),
+            Me: me ? { ...me, OpenAttempt: this.mapGoalAttempt(me.OpenAttempt), Place: me.Place ?? null, FinalPlace: me.FinalPlace ?? null, Bracket: me.Bracket ?? null } : null
+        };
+    }
+    mapGoalAttempt(wire) {
+        if (!wire)
+            return null;
+        return { ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [] };
+    }
+    mapCommunityGoal(wire) {
+        if (!wire)
+            return null;
+        return { ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], ClosedAt: wire.ClosedAt ?? null, NextGoalId: wire.NextGoalId ?? null };
+    }
+    async throwCommunityGoalError(response, fallback) {
+        const text = await response.text();
+        let code = CommunityGoalErrorCode.Unknown;
+        let message = text || `HTTP ${response.status}`;
+        let nextGoalId = null;
+        let resetsAt = null;
+        try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed.Error === 'string' &&
+                Object.values(CommunityGoalErrorCode).includes(parsed.Error)) {
+                code = parsed.Error;
+            }
+            if (parsed && typeof parsed.Message === 'string') {
+                message = parsed.Message;
+            }
+            nextGoalId = parsed?.NextGoalId ?? null;
+            resetsAt = parsed?.ResetsAt ?? null;
+        }
+        catch {
+            // Not a JSON body - keep the raw text under the Unknown code.
+        }
+        throw new CommunityGoalError(code, `${fallback}: ${message}`, nextGoalId, resetsAt);
+    }
     /* ================= Dedicated Server Session Methods =================
      *
      * NOTE: The Dedicated Server methods are not supported at the moment; do not use them.
@@ -2596,6 +2842,8 @@ return {
   GhostErrorCode: GhostErrorCode,
   GhostError: GhostError,
   GhostOutcome: GhostOutcome,
+  CommunityGoalErrorCode: CommunityGoalErrorCode,
+  CommunityGoalError: CommunityGoalError,
   CryptoHelper: CryptoHelper,
   FunticoSDK: FunticoSDK,
   FunticoClient: FunticoClient

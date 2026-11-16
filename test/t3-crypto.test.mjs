@@ -8,7 +8,7 @@ import { importEsm, requireUmd } from './helpers/paths.mjs';
 import {
   serverEncrypt, serverDecrypt, serverHmac, serverKey, payloadAesKey, payloadHmacKey, sessionKey,
 } from './helpers/crypto-oracle.mjs';
-import { defaultRoutes, config, PUB, PRIV, PLATFORM_TOKEN, USER_ID, ROOM_A, TOURNAMENT_ID, GHOST_MATCH_ID } from './fixtures/wire.mjs';
+import { defaultRoutes, config, PUB, PRIV, PLATFORM_TOKEN, USER_ID, ROOM_A, TOURNAMENT_ID, GHOST_MATCH_ID, GOAL_ATTEMPT_ID, GOAL_ID } from './fixtures/wire.mjs';
 
 const builds = [
   { name: 'esm', mod: await importEsm() },
@@ -79,6 +79,8 @@ for (const { name, mod } of builds) {
       await ctx.sdk.CompleteCampaignLevel({ score: 1234.5, perfect: true, missed: false });
       ctx.state.attempt = attempt;
       await ctx.sdk.ReportGhostResult(GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Draw, 'fight-hash-01');
+      await ctx.sdk.CompleteGoalAttempt({ AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID }, 1500000,
+        { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1' });
       await ctx.sdk.CreateSession_Client('{"level":1,"hp":50}', mod.GameTypeEnum.Rooms, eventId, sessionId);
       await ctx.sdk.ResultTournament_Server(TOURNAMENT_ID, saveScoreId, 5000, 1058, true);
     }, { routes: defaultRoutes() });
@@ -112,6 +114,13 @@ for (const { name, mod } of builds) {
     assert.deepEqual(JSON.parse(serverDecrypt(ghost.EncryptedData, payloadAesKey(GHOST_MATCH_ID, PRIV))),
       { MatchId: GHOST_MATCH_ID, Outcome: 'Draw', FightHash: 'fight-hash-01' });
     assert.equal(ghost.Hash, serverHmac(ghost.EncryptedData, payloadHmacKey(PRIV)));
+
+    // CompleteGoalAttempt: payload keyed on the (lowercased) attempt id, which also travels in the clear.
+    const goal = JSON.parse(find('/CommunityGoal/attempt/complete').body);
+    assert.equal(goal.AttemptId, GOAL_ATTEMPT_ID);
+    assert.deepEqual(JSON.parse(serverDecrypt(goal.EncryptedData, payloadAesKey(GOAL_ATTEMPT_ID, PRIV))),
+      { AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Contribution: 1500000, ClientDurationSeconds: 58.5, Metrics: { hits: 42 }, FightHash: 'fh-1' });
+    assert.equal(goal.Hash, serverHmac(goal.EncryptedData, payloadHmacKey(PRIV)));
 
     // Saved session: Data and Hash of the created session.
     const saved = JSON.parse(find('/Session/create-session').body);

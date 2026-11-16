@@ -48,7 +48,10 @@ export function normalizeError(err, mod) {
     isCampaignError: mod.CampaignError ? err instanceof mod.CampaignError : false,
     isInventoryError: mod.InventoryError ? err instanceof mod.InventoryError : false,
     isGhostError: mod.GhostError ? err instanceof mod.GhostError : false,
+    isCommunityGoalError: mod.CommunityGoalError ? err instanceof mod.CommunityGoalError : false,
     code: err.Code,
+    nextGoalId: err.NextGoalId,
+    resetsAt: err.ResetsAt,
   };
 }
 
