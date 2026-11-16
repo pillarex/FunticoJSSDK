@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 dbd88b640a55) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 795c696edae8) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 (function (root, factory) {
@@ -2082,23 +2082,24 @@ class FunticoSDK {
         if (!response.ok)
             await this.throwInventoryError(response, "Failed to fetch recent rewards");
         const wire = await response.json();
+        return { Rewards: (wire.Rewards ?? []).map(reward => this.mapRecentReward(reward)) };
+    }
+    mapRecentReward(reward) {
         return {
-            Rewards: (wire.Rewards ?? []).map(reward => ({
-                Id: reward.Id,
-                Source: reward.Source ?? '',
-                RunId: reward.RunId ?? '',
-                Key: reward.Key ?? '',
-                Status: reward.Status ?? '',
-                Items: (reward.Items ?? []).map(item => ({
-                    ItemId: item.ItemId,
-                    GameItemId: item.GameItemId ?? null,
-                    Name: item.Name ?? null,
-                    ImageUrl: item.ImageUrl ?? null,
-                    Amount: item.Amount ?? 1
-                })),
-                CreatedAt: reward.CreatedAt,
-                DeliveredAt: reward.DeliveredAt ?? null
-            }))
+            Id: reward.Id,
+            Source: reward.Source ?? '',
+            RunId: reward.RunId ?? '',
+            Key: reward.Key ?? '',
+            Status: reward.Status ?? '',
+            Items: (reward.Items ?? []).map(item => ({
+                ItemId: item.ItemId,
+                GameItemId: item.GameItemId ?? null,
+                Name: item.Name ?? null,
+                ImageUrl: item.ImageUrl ?? null,
+                Amount: item.Amount ?? 1
+            })),
+            CreatedAt: reward.CreatedAt,
+            DeliveredAt: reward.DeliveredAt ?? null
         };
     }
     mapInventoryItem(wire) {
@@ -2394,7 +2395,10 @@ class FunticoSDK {
         if (!response.ok)
             await this.throwCommunityGoalError(response, "Failed to complete the goal attempt");
         const wire = await response.json();
-        return { ...wire, MilestonesCrossed: wire.MilestonesCrossed ?? [], NextGoalId: wire.NextGoalId ?? null, Place: wire.Place ?? null };
+        return {
+            ...wire, MilestonesCrossed: wire.MilestonesCrossed ?? [], NextGoalId: wire.NextGoalId ?? null, Place: wire.Place ?? null,
+            Best: wire.Best ?? 0, IsNewBest: wire.IsNewBest ?? false
+        };
     }
     /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
     async GetCommunityGoalLeaderboard(goalId, page = 1, limit = 20) {
@@ -2405,7 +2409,32 @@ class FunticoSDK {
         if (!response.ok)
             await this.throwCommunityGoalError(response, "Failed to fetch the goal leaderboard");
         const wire = await response.json();
-        return { ...wire, Items: wire.Items ?? [], Around: wire.Around ?? [], Me: wire.Me ?? null };
+        const entry = (row) => ({ ...row, Best: row.Best ?? 0 });
+        return { ...wire, Items: (wire.Items ?? []).map(entry), Around: (wire.Around ?? []).map(entry), Me: wire.Me ? entry(wire.Me) : null };
+    }
+    /**
+     * The chain's past goals (closed or settled), newest first, with the signed-in player's part in
+     * each: score, best strike, share of the goal, final place, bracket and reward status. Up to 20
+     * per page. For one goal's full state and the rewards it paid, use GetCommunityGoalById.
+     */
+    async GetCommunityGoalHistory(chainKey, page = 1, limit = 10) {
+        const query = `page=${page}&limit=${limit}`;
+        const response = await fetch(`${this.apiUri}/CommunityGoal/${encodeURIComponent(chainKey)}/history?${query}`, {
+            headers: this.getOptionalAuthHeaders()
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to fetch the goal history");
+        const wire = await response.json();
+        return {
+            ...wire,
+            Items: (wire.Items ?? []).map(item => ({
+                ...item,
+                ClosedAt: item.ClosedAt ?? null,
+                Me: item.Me
+                    ? { ...item.Me, FinalPlace: item.Me.FinalPlace ?? null, Bracket: item.Me.Bracket ?? null, RewardStatus: item.Me.RewardStatus ?? null }
+                    : null
+            }))
+        };
     }
     /**
      * Polls a goal's live state at the interval the server asks for and calls onChange whenever the
@@ -2482,11 +2511,16 @@ class FunticoSDK {
     }
     mapCommunityGoalState(wire) {
         const me = wire.Me ?? null;
+        const rewards = me?.Rewards ?? [];
         return {
             ...wire,
             Chain: { ...wire.Chain, Milestones: wire.Chain?.Milestones ?? [] },
             Goal: this.mapCommunityGoal(wire.Goal),
-            Me: me ? { ...me, OpenAttempt: this.mapGoalAttempt(me.OpenAttempt), Place: me.Place ?? null, FinalPlace: me.FinalPlace ?? null, Bracket: me.Bracket ?? null } : null
+            Me: me ? {
+                ...me, OpenAttempt: this.mapGoalAttempt(me.OpenAttempt), Place: me.Place ?? null, FinalPlace: me.FinalPlace ?? null,
+                Bracket: me.Bracket ?? null, Best: me.Best ?? 0, RewardStatus: me.RewardStatus ?? null,
+                Rewards: rewards.map(reward => this.mapRecentReward(reward))
+            } : null
         };
     }
     mapGoalAttempt(wire) {
@@ -2497,7 +2531,17 @@ class FunticoSDK {
     mapCommunityGoal(wire) {
         if (!wire)
             return null;
-        return { ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], ClosedAt: wire.ClosedAt ?? null, NextGoalId: wire.NextGoalId ?? null };
+        return {
+            ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], ClosedAt: wire.ClosedAt ?? null, NextGoalId: wire.NextGoalId ?? null,
+            Rewards: (wire.Rewards ?? []).map(bracket => ({
+                ...bracket,
+                Label: bracket.Label ?? null,
+                MaxPlace: bracket.MaxPlace ?? null,
+                MaxPercentile: bracket.MaxPercentile ?? null,
+                AnyContribution: bracket.AnyContribution ?? false,
+                Display: (bracket.Display ?? []).map(shown => ({ ...shown, ImageUrl: shown.ImageUrl ?? null, Amount: shown.Amount ?? null }))
+            }))
+        };
     }
     async throwCommunityGoalError(response, fallback) {
         const text = await response.text();

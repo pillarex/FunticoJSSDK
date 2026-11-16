@@ -107,6 +107,7 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`StartGoalAttempt`](#startgoalattempt)
    - [`CompleteGoalAttempt`](#completegoalattempt)
    - [`GetCommunityGoalLeaderboard`](#getcommunitygoalleaderboard)
+   - [`GetCommunityGoalHistory`](#getcommunitygoalhistory)
    - [`CommunityGoalError`](#communitygoalerror)
 10. [Client Session Methods (Reconnection)](#client-session-methods-reconnection)
    - [`UserHasUnfinishedSession_Client`](#userhasunfinishedsession_client)
@@ -2793,9 +2794,9 @@ GetRecentRewards(limit?: number, since?: Date | null): Promise<RecentRewardsResp
 
 **RecentReward fields:**
 - `Id` - Unique id of the reward
-- `Source` - `'Room'`, `'Tournament'`, `'Practice'`, `'Campaign'` or `'Arena'`
+- `Source` - `'Room'`, `'Tournament'`, `'Practice'`, `'Campaign'`, `'Arena'` or `'CommunityGoal'`
 - `RunId` - The run it belongs to
-- `Key` - The collected key or reward table that produced it
+- `Key` - The collected key or reward table that produced it; for a Community Goal, the reward bracket
 - `Status` - A `RecentRewardStatus` value: `Queued` (on its way), `Delivered`, `Empty` (a random draw that paid nothing), `Refused`, `Failed`
 - `Items` - `{ ItemId, GameItemId, Name, ImageUrl, Amount }[]`; empty for an `Empty` draw
 - `CreatedAt` / `DeliveredAt` - ISO-8601 strings (UTC); `DeliveredAt` is null until delivered
@@ -3105,7 +3106,8 @@ What a contribution means is entirely your game's: damage, coins, metres. The se
 - **One live attempt.** Calling `StartGoalAttempt` again while an attempt is live returns that same attempt (`Resumed: true`, same `Seed`, same `MilestonesAtStart`, nothing spent). This is how a reloaded game resumes. The live attempt may belong to an earlier goal: always play against the `Goal` the start returned, in the phase of `Attempt.MilestonesAtStart` (the goal may have moved on since the start).
 - **Late attempts count.** An attempt started before its goal closed still counts in full on that goal, even if the goal closed while it was being played. The result then says `GoalClosed: true` and names `NextGoalId`.
 - **Plausibility limits.** The chain may cap a single contribution; a larger one counts up to the cap (`Capped: true`). Completing faster than `MinAttemptSeconds` (server clock) spends the attempt with nothing counted.
-- **Places** rank by score (the chain's `Scoring`: `Sum`, `Best` or `BestPerDay`), then by who reached it first. `Score` is how the player ranks; `Contributed` is how much they added to the goal. Final places are fixed when the goal is `Settled`, shortly after it closes.
+- **Places** rank by score (the chain's `Scoring`: `Sum`, `Best` or `BestPerDay`), then by who reached it first. `Score` is how the player ranks; `Contributed` is how much they added to the goal; `Best` is their largest single accepted contribution ("best strike"). Final places are fixed when the goal is `Settled`, shortly after it closes.
+- **Rewards.** Each goal lists its reward brackets in `Goal.Rewards`, top-down (`#1`, `#2`, `#3`, `TOP 10%`, `ANY HIT`...). At settlement every contributor gets the **first** bracket their final place matches, and only that one (`Me.Bracket`). The rewards are then delivered to the player's inventory by themselves; `Me.RewardStatus` says where they are and `Me.Rewards` lists what arrived. `GetRecentRewards` lists the same entries with `Source: 'CommunityGoal'`.
 
 > **Casing note:** Community Goal responses are **PascalCase** (`Goal`, `CurrentValue`, `PayloadJson`).
 
@@ -3130,9 +3132,20 @@ GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>
 - `Me` (`CommunityGoalMe | null`) - `null` before sign-in.
 - `PollAfterSeconds` (`number`) - Poll the live value no more often than this.
 
-**CommunityGoal Properties:** `GoalId`, `Number` (1, 2, 3... within the chain), `Name`, `Status` (`'Open' | 'Closed' | 'Settled'`), `TargetValue`, `CurrentValue` (may pass the target: late attempts still count), `Progress` (0..1), `MilestonesPassed`, `OpenedAt`, `ClosedAt`, `ContributorCount`, `PayloadJson` (your game's data, a JSON string) and `NextGoalId` (set once the goal is no longer open and the next one exists).
+**CommunityGoal Properties:** `GoalId`, `Number` (1, 2, 3... within the chain), `Name`, `Status` (`'Open' | 'Closed' | 'Settled'`), `TargetValue`, `CurrentValue` (may pass the target: late attempts still count), `Progress` (0..1), `MilestonesPassed`, `OpenedAt`, `ClosedAt`, `ContributorCount`, `PayloadJson` (your game's data, a JSON string), `NextGoalId` (set once the goal is no longer open and the next one exists) and `Rewards` (the reward brackets, see below).
 
-**CommunityGoalMe Properties:** `IsContributor`, `Score`, `Place` (`null` until the player contributes), `Contributed`, `Attempts` (completed on this goal), `AttemptsUsedToday`, `AttemptsLeftToday` (`null` = no limit), `ResetsAt`, `OpenAttempt` (the player's live attempt, if any), and for settled goals `FinalPlace` and `Bracket` (the reward bracket of that place).
+**CommunityGoalBracket Properties:** `Name` (the key `Me.Bracket` names), `Label` (what to show, e.g. `'#1'` or `'TOP 10%'`; may be `null`), exactly one of `MaxPlace` (final places 1..MaxPlace), `MaxPercentile` (final place × 100 / contributors at most this) or `AnyContribution` (everyone who contributed), and `Display` (what the bracket pays, as configured for display: `Name`, `ImageUrl`, `Amount`). The actual items are drawn when the goal settles.
+
+**CommunityGoalMe Properties:** `IsContributor`, `Score`, `Place` (`null` until the player contributes), `Contributed`, `Best` (the player's best strike on this goal), `Attempts` (completed on this goal), `AttemptsUsedToday`, `AttemptsLeftToday` (`null` = no limit), `ResetsAt`, `OpenAttempt` (the player's live attempt, if any), and for settled goals `FinalPlace`, `Bracket` (the reward bracket of that place), `RewardStatus` and `Rewards`.
+
+**RewardStatus Values** (`null` before settlement or for a non-contributor):
+- `None` - No bracket for this place (or nothing payable).
+- `Pending` - Placed in a bracket; the rewards are not drawn yet (usually within a minute of settling).
+- `Queued` - Drawn; at least one is still on its way to the inventory. It arrives by itself, at the latest after the player's next sign-in.
+- `Delivered` - Everything drawn has arrived. A draw may come up empty.
+- `Failed` - Nothing is left to send, but part of it was not accepted.
+
+`Rewards` (`RecentReward[]`) lists what this goal paid the player, with item names and images: the same shape `GetRecentRewards` returns.
 
 **Usage:**
 ```javascript
@@ -3217,7 +3230,7 @@ CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribu
 - `contribution` - A whole number of 0 or more. Anything else is rejected with `InvalidContribution` before a request is made.
 - `options.clientDurationSeconds`, `options.metrics` (up to 16 numbers), `options.fightHash` - Optional, for analytics and later checks.
 
-**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Place`, `AttemptsLeftToday`, `ResetsAt` and `Replayed`.
+**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Best` (the player's best strike on this goal, this one included), `IsNewBest` (this contribution beat every earlier one of the player on this goal; the same on a replay), `Place`, `AttemptsLeftToday`, `ResetsAt` and `Replayed`.
 
 **Usage:**
 ```javascript
@@ -3225,6 +3238,7 @@ const { Attempt, Goal } = await sdk.StartGoalAttempt(state.Goal.GoalId);
 const damage = await playBossFight(JSON.parse(Goal.PayloadJson), Attempt.MilestonesAtStart, Attempt.Seed);
 const result = await sdk.CompleteGoalAttempt(Attempt, damage);
 showHitResult(result.Accepted, result.Place, result.MilestonesCrossed);
+if (result.IsNewBest) showNewBest(result.Best);
 if (result.ClosedByMe) showFinalBlow();
 ```
 
@@ -3239,7 +3253,32 @@ Contributors of a goal ranked by score, the player's own row and the rows around
 GetCommunityGoalLeaderboard(goalId: string, page?: number, limit?: number): Promise<CommunityGoalLeaderboard>
 ```
 
-**Returns:** `CommunityGoalLeaderboard` with `GoalId`, `Items`, `Me`, `Around` (up to two rows above and below the player, the player included), `Total`, `Page`, `Limit` and `HasMore`. Each entry has `Place`, `Name`, `AvatarUrl`, `Score`, `Contributed`, `Attempts` and `IsMe`. `limit` goes up to 100.
+**Returns:** `CommunityGoalLeaderboard` with `GoalId`, `Items`, `Me`, `Around` (up to two rows above and below the player, the player included), `Total`, `Page`, `Limit` and `HasMore`. Each entry has `Place`, `Name`, `AvatarUrl`, `Score`, `Contributed`, `Best` (best strike), `Attempts` and `IsMe`. `limit` goes up to 100.
+
+---
+
+### `GetCommunityGoalHistory`
+
+The chain's past goals (closed or settled), newest first, with the signed-in player's part in each. Use it for a "previous bosses" screen; for one goal's full state and the rewards it paid, call `GetCommunityGoalById`. Works before sign-in (`Me` is then `null`).
+
+**Signature:**
+```typescript
+GetCommunityGoalHistory(chainKey: string, page?: number, limit?: number): Promise<CommunityGoalHistory>
+```
+
+**Returns:** `CommunityGoalHistory` with `Items`, `Total`, `Page`, `Limit` (default 10, up to 20) and `HasMore`. Each entry has `GoalId`, `Number`, `Name`, `Status`, `TargetValue`, `CurrentValue`, `OpenedAt`, `ClosedAt`, `LifetimeSeconds` (how long the goal held out), `ContributorCount`, `PayloadJson` and `Me`: `IsContributor`, `Score`, `Contributed`, `Best`, `Attempts`, `Share` (`Contributed` / the goal's `CurrentValue`, 0..1), `FinalPlace`, `Bracket` and `RewardStatus`.
+
+**Usage:**
+```javascript
+// "Boss down" screen for the goal that just closed: how long it held, the player's share.
+const closed = await sdk.GetCommunityGoalById(closedGoalId);
+const heldFor = Date.parse(closed.Goal.ClosedAt) - Date.parse(closed.Goal.OpenedAt);
+const share = closed.Me ? closed.Me.Contributed / closed.Goal.CurrentValue : 0;
+
+// Previous bosses.
+const history = await sdk.GetCommunityGoalHistory('world-boss');
+for (const past of history.Items) addPastBoss(past.Name, past.LifetimeSeconds, past.Me && past.Me.FinalPlace, past.Me && past.Me.RewardStatus);
+```
 
 ---
 

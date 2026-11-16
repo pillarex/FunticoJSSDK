@@ -12,6 +12,7 @@ import {
   BALANCE, ROOM_A, ROOM_B, ROOM_C, ROOM_D, VOUCHERS, VOUCHERS_SPENT, LEADERS, TOURNAMENT_ID, TOURNAMENT_LEADERBOARD, TOURNAMENT_HISTORY,
   CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession, GHOST_MATCH_ID,
   GOAL_CHAIN_KEY, GOAL_ID, NEXT_GOAL_ID, GOAL_ATTEMPT_ID, GOAL_ATTEMPT, GOAL_ATTEMPT_START, COMMUNITY_GOAL_LIVE, communityGoal,
+  COMMUNITY_GOAL_SETTLED,
 } from './wire.mjs';
 
 const tokenConfig = (mod, extra) => config(mod, { userToken: PLATFORM_TOKEN, ...extra });
@@ -886,6 +887,12 @@ export const SCENARIOS = [
       ctx.check(lastRequest(ctx).headers['X-User-Key'] === PUB && lastRequest(ctx).headers.Authorization === undefined, 'anonymous read: no token');
       ctx.check(anon.Goal.GoalId === GOAL_ID && Array.isArray(anon.Goal.MilestonesPassed) && anon.Goal.MilestonesPassed.length === 0, 'null MilestonesPassed becomes []');
       ctx.check(anon.Chain.Milestones.length === 3 && anon.Me.AttemptsLeftToday === 1 && anon.Me.OpenAttempt === null, 'state mapped');
+      const [b1, b2, b3] = anon.Goal.Rewards;
+      ctx.check(anon.Goal.Rewards.length === 3 && b1.Label === '#1' && b1.MaxPlace === 1 && b1.Display[0].Amount === 3 && b2.MaxPercentile === 10 && b2.Display.length === 0,
+        'reward brackets mapped, null Display becomes []');
+      ctx.check(b3.Label === null && b3.MaxPlace === null && b3.MaxPercentile === null && b3.AnyContribution && b3.Display[0].ImageUrl === null && b3.Display[0].Amount === null,
+        'missing bracket fields become null');
+      ctx.check(anon.Me.Best === 1500000 && anon.Me.RewardStatus === null && Array.isArray(anon.Me.Rewards) && anon.Me.Rewards.length === 0, 'Me: best strike, no reward state yet');
       await ctx.call('StartGoalAttempt', GOAL_ID);
       ctx.check(/not authenticated/.test(ctx.lastError()?.message), 'attempts need sign-in');
 
@@ -907,6 +914,7 @@ export const SCENARIOS = [
       const result = await ctx.call('CompleteGoalAttempt', start.Attempt, 5000000, { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1' });
       ctx.check(lastBody(ctx).AttemptId === GOAL_ATTEMPT_ID && /^[0-9a-f]{64}$/.test(lastBody(ctx).Hash) && !lastRequest(ctx).body.includes('5000000'), 'completion travels encrypted');
       ctx.check(result.Accepted === 1500000 && result.Capped && result.MilestonesCrossed.length === 2 && result.Place === 1, 'completion mapped');
+      ctx.check(result.Best === 1500000 && result.IsNewBest === true, 'completion: best strike and NEW BEST');
       await ctx.call('CompleteGoalAttempt', { AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID.toUpperCase() }, 0);
       ctx.check(lastBody(ctx).AttemptId === GOAL_ATTEMPT_ID, 'attempt id lowercased');
 
@@ -922,8 +930,44 @@ export const SCENARIOS = [
       const board = await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID);
       ctx.check(lastRequest(ctx).url.endsWith(`/CommunityGoal/goal/${GOAL_ID}/leaderboard?page=1&limit=20`), 'leaderboard defaults');
       ctx.check(board.Items.length === 2 && board.Items[1].Name === null && board.Me.Place === 4 && board.Around.length === 3, 'leaderboard mapped');
+      ctx.check(board.Items[0].Best === 1050000 && board.Me.Best === 750000 && board.Around[2].Best === 750000, 'leaderboard rows carry the best strike');
       await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID, 3, 50);
       ctx.check(lastRequest(ctx).url.endsWith('?page=3&limit=50'), 'leaderboard paging');
+
+      // A settled goal: the player's bracket, its reward status and what it paid.
+      ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}`, json(COMMUNITY_GOAL_SETTLED));
+      const settledGoal = await ctx.call('GetCommunityGoalById', GOAL_ID);
+      const [paid, waiting] = settledGoal.Me.Rewards;
+      ctx.check(settledGoal.Goal.Status === 'Settled' && settledGoal.Me.Bracket === 'place1' && settledGoal.Me.RewardStatus === 'Delivered' && settledGoal.Me.Rewards.length === 2,
+        'settled goal: bracket, reward status, rewards');
+      ctx.check(paid.Source === 'CommunityGoal' && paid.Items[0].Name === 'Plasma Core' && paid.Items[0].ImageUrl === null && paid.DeliveredAt === '2026-11-16T20:11:02Z',
+        'a paid reward mapped like GetRecentRewards');
+      ctx.check(waiting.Source === '' && waiting.RunId === '' && waiting.Key === '' && waiting.Items.length === 0 && waiting.DeliveredAt === null, 'sparse reward: empty strings and []');
+
+      // History: past goals with the player's part.
+      const history = await ctx.call('GetCommunityGoalHistory', GOAL_CHAIN_KEY);
+      ctx.check(lastRequest(ctx).url === `${API}/CommunityGoal/world-boss/history?page=1&limit=10` && lastRequest(ctx).headers.Authorization === `Bearer ${JWT}`,
+        'history url and defaults, with the token');
+      ctx.check(history.Items.length === 2 && history.HasMore && history.Total === 3 && history.Items[0].Me.RewardStatus === null && history.Items[0].Me.FinalPlace === null,
+        'history mapped');
+      ctx.check(history.Items[1].Me.Share === 0.88 && history.Items[1].Me.Best === 1500000 && history.Items[1].LifetimeSeconds === 43200 && history.Items[1].Me.RewardStatus === 'Delivered',
+        'history entry: share, best, lifetime, reward status');
+      ctx.route('GET /CommunityGoal/key%20with%20spaces%2F%26/history', json({ Items: [], Total: 0, Page: 2, Limit: 5, HasMore: false }));
+      await ctx.call('GetCommunityGoalHistory', 'key with spaces/&', 2, 5);
+      ctx.check(lastRequest(ctx).url.endsWith('/CommunityGoal/key%20with%20spaces%2F%26/history?page=2&limit=5'), 'history paging, chain key encoded');
+      ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`, json({
+        Items: [{ GoalId: GOAL_ID, Number: 3, Name: 'Warden', Status: 'Closed', TargetValue: 1, CurrentValue: 1, OpenedAt: '2026-11-16T08:00:00Z',
+          LifetimeSeconds: 0, ContributorCount: 1, PayloadJson: '{}', Me: { IsContributor: true, Score: 1, Contributed: 1, Best: 1, Attempts: 1, Share: 1 } },
+        { GoalId: NEXT_GOAL_ID, Number: 2, Name: 'Hydra', Status: 'Settled', TargetValue: 1, CurrentValue: 1, OpenedAt: '2026-11-15T08:00:00Z',
+          LifetimeSeconds: 0, ContributorCount: 0, PayloadJson: '{}', Me: null }],
+        Total: 2, Page: 1, Limit: 10, HasMore: false,
+      }));
+      const sparseHistory = await ctx.call('GetCommunityGoalHistory', GOAL_CHAIN_KEY);
+      const [h1, h2] = sparseHistory.Items;
+      ctx.check(h1.ClosedAt === null && h1.Me.FinalPlace === null && h1.Me.Bracket === null && h1.Me.RewardStatus === null && h2.Me === null,
+        'missing history fields become null');
+      ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`, json({ Total: 0, Page: 1, Limit: 10, HasMore: false }));
+      ctx.check((await ctx.call('GetCommunityGoalHistory', GOAL_CHAIN_KEY)).Items.length === 0, 'missing history list becomes []');
 
       // Watch: the first poll fires at once and reports; stop() ends it before any timer runs.
       const seen = [];
@@ -956,6 +1000,8 @@ export const SCENARIOS = [
         [`GET /CommunityGoal/goal/${GOAL_ID}/live`, 'GetCommunityGoalLive', [GOAL_ID],
           json({ Error: 'BrandNewCode', Message: 'Future' }, 400), mod.CommunityGoalErrorCode.Unknown],
         [`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, 'GetCommunityGoalLeaderboard', [GOAL_ID], text('Bad Gateway', 502), mod.CommunityGoalErrorCode.Unknown],
+        [`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`, 'GetCommunityGoalHistory', [GOAL_CHAIN_KEY],
+          json({ Error: 'ChainNotFound', Message: 'No chain' }, 400), mod.CommunityGoalErrorCode.ChainNotFound],
       ];
       for (const [route, method, args, failure, code] of failures) {
         ctx.route(route, failure);
@@ -986,12 +1032,18 @@ export const SCENARIOS = [
       }));
       const withOpen = await ctx.call('GetCommunityGoal', GOAL_CHAIN_KEY);
       ctx.check(withOpen.Me.OpenAttempt.GoalValueAtStart === 700000 && withOpen.Me.OpenAttempt.MilestonesAtStart.length === 0 && withOpen.Me.FinalPlace === null, 'open attempt in Me mapped');
+      ctx.check(withOpen.Me.Best === 0 && withOpen.Me.RewardStatus === null && withOpen.Me.Rewards.length === 0, 'missing Me best/reward fields become 0/null/[]');
+      ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}`, json({ Chain: { Key: GOAL_CHAIN_KEY }, Goal: communityGoal({ Rewards: null }), AwaitingNext: false, Me: null, PollAfterSeconds: 5 }));
+      ctx.check((await ctx.call('GetCommunityGoal', GOAL_CHAIN_KEY)).Goal.Rewards.length === 0, 'missing brackets become []');
       ctx.route('POST /CommunityGoal/attempt/complete', json({ AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Replayed: true, Accepted: 0 }));
       const sparse = await ctx.call('CompleteGoalAttempt', GOAL_ATTEMPT, 0);
       ctx.check(sparse.Replayed && sparse.MilestonesCrossed.length === 0 && sparse.NextGoalId === null && sparse.Place === null, 'missing result fields become []/null');
+      ctx.check(sparse.Best === 0 && sparse.IsNewBest === false, 'missing best fields become 0/false');
       ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, json({ GoalId: GOAL_ID, Total: 0, Page: 1, Limit: 20, HasMore: false }));
       const emptyBoard = await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID);
       ctx.check(emptyBoard.Items.length === 0 && emptyBoard.Around.length === 0 && emptyBoard.Me === null, 'missing leaderboard lists become []/null');
+      ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, json({ GoalId: GOAL_ID, Items: [{ Place: 1, Name: 'Old', Score: 5 }], Total: 1, Page: 1, Limit: 20, HasMore: false }));
+      ctx.check((await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID)).Items[0].Best === 0, 'a row without Best reads 0');
     },
   },
 

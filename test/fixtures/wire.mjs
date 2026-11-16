@@ -413,7 +413,15 @@ export function communityGoal(overrides = {}) {
   return {
     GoalId: GOAL_ID, Number: 3, Name: 'Warden', Status: 'Open', TargetValue: 2500000, CurrentValue: 700000, Progress: 0.28,
     MilestonesPassed: [0.25], OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: null, ContributorCount: 41,
-    PayloadJson: '{"boss":"Warden","hull":2500000}', NextGoalId: null, ...overrides,
+    PayloadJson: '{"boss":"Warden","hull":2500000}', NextGoalId: null,
+    // Brackets: a full one, one with null lists, and one the server sent without the optional fields.
+    Rewards: [
+      { Name: 'place1', Label: '#1', MaxPlace: 1, MaxPercentile: null, AnyContribution: false,
+        Display: [{ Name: 'Plasma Core', ImageUrl: 'https://cdn.example/core.png', Amount: 3 }] },
+      { Name: 'top10', Label: null, MaxPlace: null, MaxPercentile: 10, AnyContribution: false, Display: null },
+      { Name: 'all', AnyContribution: true, Display: [{ Name: 'Random part' }] },
+    ],
+    ...overrides,
   };
 }
 
@@ -428,10 +436,39 @@ export const COMMUNITY_GOAL_STATE = {
   Goal: communityGoal({ MilestonesPassed: null }),
   AwaitingNext: false,
   Me: {
-    IsContributor: true, Score: 1500000, Place: 4, Contributed: 2200000, Attempts: 2, AttemptsUsedToday: 2, AttemptsLeftToday: 1,
-    ResetsAt: '2026-11-17T00:00:00Z', OpenAttempt: null, FinalPlace: null, Bracket: null,
+    IsContributor: true, Score: 1500000, Place: 4, Contributed: 2200000, Best: 1500000, Attempts: 2, AttemptsUsedToday: 2, AttemptsLeftToday: 1,
+    ResetsAt: '2026-11-17T00:00:00Z', OpenAttempt: null, FinalPlace: null, Bracket: null, RewardStatus: null, Rewards: null,
   },
   PollAfterSeconds: 5, ServerTime: '2026-11-16T10:00:00Z',
+};
+
+/** GET /CommunityGoal/goal/{id} of a settled goal: the player's bracket and what it paid (one delivered, one sparse queued). */
+export const COMMUNITY_GOAL_SETTLED = {
+  ...COMMUNITY_GOAL_STATE,
+  Goal: communityGoal({ Status: 'Settled', ClosedAt: '2026-11-16T20:00:00Z', NextGoalId: NEXT_GOAL_ID }),
+  Me: {
+    ...COMMUNITY_GOAL_STATE.Me, Place: 1, FinalPlace: 1, Bracket: 'place1', RewardStatus: 'Delivered',
+    Rewards: [
+      { Id: '7d8e9f0a-3b4c-4d5e-8f6a-7b8c9d0e1f2a', Source: 'CommunityGoal', RunId: 'goal-5a6b7c8d1e2f4a3b9c4d5e6f7a8b9c0d', Key: 'place1',
+        Status: 'Delivered', Items: [{ ItemId: 442, GameItemId: 'plasma_core', Name: 'Plasma Core', ImageUrl: null, Amount: 1 }],
+        CreatedAt: '2026-11-16T20:11:00Z', DeliveredAt: '2026-11-16T20:11:02Z' },
+      { Id: '8e9f0a1b-4c5d-4e6f-9a7b-8c9d0e1f2a3b', Source: null, RunId: null, Key: null, Status: 'Queued', Items: null,
+        CreatedAt: '2026-11-16T20:11:00Z', DeliveredAt: null },
+    ],
+  },
+};
+
+/** GET /CommunityGoal/world-boss/history: page 1 of 3 past goals. */
+export const GOAL_HISTORY = {
+  Items: [
+    { GoalId: NEXT_GOAL_ID, Number: 4, Name: 'Leviathan', Status: 'Closed', TargetValue: 7500000, CurrentValue: 7600000,
+      OpenedAt: '2026-11-16T20:00:00Z', ClosedAt: '2026-11-17T20:00:00Z', LifetimeSeconds: 86400, ContributorCount: 120, PayloadJson: '{"boss":"Leviathan"}',
+      Me: { IsContributor: false, Score: 0, Contributed: 0, Best: 0, Attempts: 0, Share: 0, FinalPlace: null, Bracket: null, RewardStatus: null } },
+    { GoalId: GOAL_ID, Number: 3, Name: 'Warden', Status: 'Settled', TargetValue: 2500000, CurrentValue: 2500000,
+      OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: '2026-11-16T20:00:00Z', LifetimeSeconds: 43200, ContributorCount: 41, PayloadJson: '{"boss":"Warden"}',
+      Me: { IsContributor: true, Score: 1500000, Contributed: 2200000, Best: 1500000, Attempts: 2, Share: 0.88, FinalPlace: 1, Bracket: 'place1', RewardStatus: 'Delivered' } },
+  ],
+  Total: 3, Page: 1, Limit: 2, HasMore: true,
 };
 
 export const COMMUNITY_GOAL_LIVE = {
@@ -444,11 +481,11 @@ export const GOAL_ATTEMPT_START = { Attempt: GOAL_ATTEMPT, Resumed: false, Goal:
 export const GOAL_ATTEMPT_RESULT = {
   AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Replayed: false, Reported: 5000000, Accepted: 1500000, Capped: true,
   ValueBefore: 700000, ValueAfter: 2200000, TargetValue: 2500000, MilestonesCrossed: [0.5, 0.75], GoalStatus: 'Open',
-  GoalClosed: false, ClosedByMe: false, NextGoalId: null, Score: 1500000, ScoreImproved: true, Place: 1,
+  GoalClosed: false, ClosedByMe: false, NextGoalId: null, Score: 1500000, ScoreImproved: true, Best: 1500000, IsNewBest: true, Place: 1,
   AttemptsLeftToday: 0, ResetsAt: '2026-11-17T00:00:00Z',
 };
 
-const goalEntry = (Place, Name, Score, IsMe = false) => ({ Place, Name, AvatarUrl: null, Score, Contributed: Score, Attempts: 3, IsMe });
+const goalEntry = (Place, Name, Score, IsMe = false) => ({ Place, Name, AvatarUrl: null, Score, Contributed: Score, Best: Score / 2, Attempts: 3, IsMe });
 
 /** GET /CommunityGoal/goal/{id}/leaderboard: page 1 of many, the player 4th with the rows around. */
 export const GOAL_LEADERBOARD = {
@@ -643,6 +680,7 @@ export function defaultRoutes() {
     [`GET /CommunityGoal/goal/${GOAL_ID}`]: json({ ...COMMUNITY_GOAL_STATE, Me: null }),
     [`GET /CommunityGoal/goal/${GOAL_ID}/live`]: json(COMMUNITY_GOAL_LIVE),
     [`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`]: json(GOAL_LEADERBOARD),
+    [`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`]: json(GOAL_HISTORY),
     'POST /CommunityGoal/attempt/start': json(GOAL_ATTEMPT_START),
     'POST /CommunityGoal/attempt/complete': json(GOAL_ATTEMPT_RESULT),
 

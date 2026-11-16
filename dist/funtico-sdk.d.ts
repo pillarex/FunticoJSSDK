@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 dbd88b640a55) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 795c696edae8) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -882,11 +882,11 @@ export interface RecentRewardItem {
 /** One reward a run, a campaign level or an arena run paid (or is paying) the player. */
 export interface RecentReward {
     Id: string;
-    /** 'Room', 'Tournament', 'Practice', 'Campaign' or 'Arena'. */
+    /** 'Room', 'Tournament', 'Practice', 'Campaign', 'Arena' or 'CommunityGoal'. */
     Source: string;
     /** The run it belongs to. */
     RunId: string;
-    /** The collected key or reward table that produced it. */
+    /** The collected key or reward table that produced it; for a Community Goal, the reward bracket. */
     Key: string;
     /** A RecentRewardStatus value. */
     Status: string;
@@ -1152,7 +1152,39 @@ export interface CommunityGoal {
     PayloadJson: string;
     /** When the goal is no longer open: the goal opened after it, if any. */
     NextGoalId: string | null;
+    /**
+     * The goal's reward brackets, top-down: at settlement each contributor gets the first bracket
+     * their final place matches, and only that one.
+     */
+    Rewards: CommunityGoalBracket[];
 }
+/** One reward bracket of a goal: who falls into it and what it pays, as configured for display. */
+export interface CommunityGoalBracket {
+    /** The bracket's key; CommunityGoalMe.Bracket names it. */
+    Name: string;
+    /** What to show for the bracket ("#1", "TOP 10%"). May be null. */
+    Label: string | null;
+    /** Exactly one of MaxPlace, MaxPercentile and AnyContribution is set: final places 1..MaxPlace. */
+    MaxPlace: number | null;
+    /** Final place x 100 / contributors at most this. */
+    MaxPercentile: number | null;
+    /** Every contributor not in an earlier bracket. */
+    AnyContribution: boolean;
+    /** What the bracket pays, as configured for display. The actual items are drawn at settlement. */
+    Display: CommunityGoalRewardDisplay[];
+}
+export interface CommunityGoalRewardDisplay {
+    Name: string;
+    ImageUrl: string | null;
+    Amount: number | null;
+}
+/**
+ * Where a contributor's bracket rewards are, once the goal is settled. 'None': no bracket (or
+ * nothing payable). 'Pending': placed, not drawn yet (usually within a minute). 'Queued': drawn, at
+ * least one still on its way. 'Delivered': everything drawn has arrived (a draw may come up empty).
+ * 'Failed': nothing left to send, but part of it was not accepted.
+ */
+export type CommunityGoalRewardStatus = 'None' | 'Pending' | 'Queued' | 'Delivered' | 'Failed';
 /** A started attempt. Pass it to CompleteGoalAttempt. */
 export interface GoalAttempt {
     AttemptId: string;
@@ -1174,6 +1206,8 @@ export interface CommunityGoalMe {
     Place: number | null;
     /** How much the player's contributions added to the goal. */
     Contributed: number;
+    /** The player's largest single accepted contribution to this goal ("best strike"). */
+    Best: number;
     Attempts: number;
     AttemptsUsedToday: number;
     /** Null when the chain has no daily limit. */
@@ -1184,6 +1218,13 @@ export interface CommunityGoalMe {
     /** Settled goals: the final place and the reward bracket it fell into. */
     FinalPlace: number | null;
     Bracket: string | null;
+    /** Settled goals: where the bracket rewards are. Null before settlement or for a non-contributor. */
+    RewardStatus: CommunityGoalRewardStatus | null;
+    /**
+     * What this goal paid the player, with item names and images. GetRecentRewards lists the same
+     * entries with Source 'CommunityGoal'.
+     */
+    Rewards: RecentReward[];
 }
 export interface CommunityGoalState {
     Chain: CommunityGoalChain;
@@ -1253,6 +1294,10 @@ export interface GoalAttemptResult {
     NextGoalId: string | null;
     Score: number;
     ScoreImproved: boolean;
+    /** The player's largest single accepted contribution to this goal, this one included. */
+    Best: number;
+    /** This contribution beat every earlier one of the player on this goal (the same on a replay). */
+    IsNewBest: boolean;
     Place: number | null;
     AttemptsLeftToday: number | null;
     ResetsAt: string;
@@ -1263,8 +1308,48 @@ export interface CommunityGoalLeaderboardEntry {
     AvatarUrl: string | null;
     Score: number;
     Contributed: number;
+    /** The player's largest single accepted contribution to this goal. */
+    Best: number;
     Attempts: number;
     IsMe: boolean;
+}
+/** A chain's past goals, newest first, as returned by GetCommunityGoalHistory. */
+export interface CommunityGoalHistory {
+    Items: CommunityGoalHistoryEntry[];
+    Total: number;
+    Page: number;
+    Limit: number;
+    HasMore: boolean;
+}
+export interface CommunityGoalHistoryEntry {
+    GoalId: string;
+    Number: number;
+    Name: string;
+    /** 'Closed' or 'Settled'. */
+    Status: CommunityGoalStatus;
+    TargetValue: number;
+    CurrentValue: number;
+    OpenedAt: string;
+    ClosedAt: string | null;
+    /** How long the goal held out, in seconds. */
+    LifetimeSeconds: number;
+    ContributorCount: number;
+    /** Your game's data for this goal, exactly as configured (a JSON string). */
+    PayloadJson: string;
+    /** The signed-in player's part in this goal; null when not signed in. */
+    Me: CommunityGoalHistoryMe | null;
+}
+export interface CommunityGoalHistoryMe {
+    IsContributor: boolean;
+    Score: number;
+    Contributed: number;
+    Best: number;
+    Attempts: number;
+    /** Contributed / the goal's CurrentValue, 0..1. */
+    Share: number;
+    FinalPlace: number | null;
+    Bracket: string | null;
+    RewardStatus: CommunityGoalRewardStatus | null;
 }
 export interface CommunityGoalLeaderboard {
     GoalId: string;
@@ -1781,6 +1866,7 @@ export declare class FunticoSDK {
      * platform yet is listed as Queued and delivered later, at the latest on the player's next login.
      */
     GetRecentRewards(limit?: number, since?: Date | null): Promise<RecentRewardsResponse>;
+    private mapRecentReward;
     private mapInventoryItem;
     private throwInventoryError;
     /** The game's ghost pools, their attributes and the player's rating in each. */
@@ -1843,6 +1929,12 @@ export declare class FunticoSDK {
     CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribution: number, options?: CompleteGoalAttemptOptions): Promise<GoalAttemptResult>;
     /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
     GetCommunityGoalLeaderboard(goalId: string, page?: number, limit?: number): Promise<CommunityGoalLeaderboard>;
+    /**
+     * The chain's past goals (closed or settled), newest first, with the signed-in player's part in
+     * each: score, best strike, share of the goal, final place, bracket and reward status. Up to 20
+     * per page. For one goal's full state and the rewards it paid, use GetCommunityGoalById.
+     */
+    GetCommunityGoalHistory(chainKey: string, page?: number, limit?: number): Promise<CommunityGoalHistory>;
     /**
      * Polls a goal's live state at the interval the server asks for and calls onChange whenever the
      * value, status or contributor count changes (and once at the start). Pauses while the page is
