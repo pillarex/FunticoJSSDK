@@ -408,16 +408,17 @@ export const GOAL_CHAIN_KEY = 'world-boss';
 export const GOAL_ID = '5a6b7c8d-1e2f-4a3b-9c4d-5e6f7a8b9c0d';
 export const NEXT_GOAL_ID = '6b7c8d9e-2f3a-4b4c-8d5e-6f7a8b9c0d1e';
 export const GOAL_ATTEMPT_ID = '3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f';
+export const GOAL_STRIKE_ID = '9d0e1f2a-5b6c-4d7e-8f9a-0b1c2d3e4f5a';
 
 export function communityGoal(overrides = {}) {
   return {
     GoalId: GOAL_ID, Number: 3, Name: 'Warden', Status: 'Open', TargetValue: 2500000, CurrentValue: 700000, Progress: 0.28,
-    MilestonesPassed: [0.25], OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: null, ContributorCount: 41,
+    MilestonesPassed: [0.25], OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: null, ContributorCount: 41, StrikeCount: 128, ClosedBy: null,
     PayloadJson: '{"boss":"Warden","hull":2500000}', NextGoalId: null,
     // Brackets: a full one, one with null lists, and one the server sent without the optional fields.
     Rewards: [
       { Name: 'place1', Label: '#1', MaxPlace: 1, MaxPercentile: null, AnyContribution: false,
-        Display: [{ Name: 'Plasma Core', ImageUrl: 'https://cdn.example/core.png', Amount: 3 }] },
+        Display: [{ Name: 'Plasma Core', Code: 'core_plasma', ImageUrl: 'https://cdn.example/core.png', Amount: 3 }] },
       { Name: 'top10', Label: null, MaxPlace: null, MaxPercentile: 10, AnyContribution: false, Display: null },
       { Name: 'all', AnyContribution: true, Display: [{ Name: 'Random part' }] },
     ],
@@ -427,7 +428,7 @@ export function communityGoal(overrides = {}) {
 
 export const GOAL_ATTEMPT = {
   AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Seed: 1234567, StartedAt: '2026-11-16T10:00:00Z', ExpiresAt: '2026-11-16T10:10:00Z',
-  GoalValueAtStart: 700000, MilestonesAtStart: [0.25],
+  GoalValueAtStart: 700000, MilestonesAtStart: [0.25], StartData: '{"ship":"nova7"}',
 };
 
 /** GET /CommunityGoal/world-boss for a signed-in player; an array the server may omit comes back null. */
@@ -445,7 +446,8 @@ export const COMMUNITY_GOAL_STATE = {
 /** GET /CommunityGoal/goal/{id} of a settled goal: the player's bracket and what it paid (one delivered, one sparse queued). */
 export const COMMUNITY_GOAL_SETTLED = {
   ...COMMUNITY_GOAL_STATE,
-  Goal: communityGoal({ Status: 'Settled', ClosedAt: '2026-11-16T20:00:00Z', NextGoalId: NEXT_GOAL_ID }),
+  Goal: communityGoal({ Status: 'Settled', ClosedAt: '2026-11-16T20:00:00Z', NextGoalId: NEXT_GOAL_ID, StrikeCount: 4210,
+    ClosedBy: { Name: 'Ace', AvatarUrl: null, Accepted: 2833, IsMe: false } }),
   Me: {
     ...COMMUNITY_GOAL_STATE.Me, Place: 1, FinalPlace: 1, Bracket: 'place1', RewardStatus: 'Delivered',
     Rewards: [
@@ -462,10 +464,12 @@ export const COMMUNITY_GOAL_SETTLED = {
 export const GOAL_HISTORY = {
   Items: [
     { GoalId: NEXT_GOAL_ID, Number: 4, Name: 'Leviathan', Status: 'Closed', TargetValue: 7500000, CurrentValue: 7600000,
-      OpenedAt: '2026-11-16T20:00:00Z', ClosedAt: '2026-11-17T20:00:00Z', LifetimeSeconds: 86400, ContributorCount: 120, PayloadJson: '{"boss":"Leviathan"}',
+      OpenedAt: '2026-11-16T20:00:00Z', ClosedAt: '2026-11-17T20:00:00Z', LifetimeSeconds: 86400, ContributorCount: 120, StrikeCount: 333, ClosedBy: null,
+      PayloadJson: '{"boss":"Leviathan"}',
       Me: { IsContributor: false, Score: 0, Contributed: 0, Best: 0, Attempts: 0, Share: 0, FinalPlace: null, Bracket: null, RewardStatus: null } },
     { GoalId: GOAL_ID, Number: 3, Name: 'Warden', Status: 'Settled', TargetValue: 2500000, CurrentValue: 2500000,
-      OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: '2026-11-16T20:00:00Z', LifetimeSeconds: 43200, ContributorCount: 41, PayloadJson: '{"boss":"Warden"}',
+      OpenedAt: '2026-11-16T08:00:00Z', ClosedAt: '2026-11-16T20:00:00Z', LifetimeSeconds: 43200, ContributorCount: 41, StrikeCount: 4210,
+      ClosedBy: { Name: 'Ace', AvatarUrl: 'https://cdn.example/ace.png', Accepted: 2833, IsMe: true }, PayloadJson: '{"boss":"Warden"}',
       Me: { IsContributor: true, Score: 1500000, Contributed: 2200000, Best: 1500000, Attempts: 2, Share: 0.88, FinalPlace: 1, Bracket: 'place1', RewardStatus: 'Delivered' } },
   ],
   Total: 3, Page: 1, Limit: 2, HasMore: true,
@@ -473,7 +477,7 @@ export const GOAL_HISTORY = {
 
 export const COMMUNITY_GOAL_LIVE = {
   GoalId: GOAL_ID, Number: 3, Status: 'Open', TargetValue: 2500000, CurrentValue: 701500, Progress: 0.2806, MilestonesPassed: [0.25],
-  ContributorCount: 42, NextGoalId: null, PollAfterSeconds: 7, ServerTime: '2026-11-16T10:00:05Z',
+  ContributorCount: 42, StrikeCount: 129, NextGoalId: null, PollAfterSeconds: 7, ServerTime: '2026-11-16T10:00:05Z',
 };
 
 export const GOAL_ATTEMPT_START = { Attempt: GOAL_ATTEMPT, Resumed: false, Goal: communityGoal(), AttemptsLeftToday: 0, ResetsAt: '2026-11-17T00:00:00Z' };
@@ -485,7 +489,14 @@ export const GOAL_ATTEMPT_RESULT = {
   AttemptsLeftToday: 0, ResetsAt: '2026-11-17T00:00:00Z',
 };
 
-const goalEntry = (Place, Name, Score, IsMe = false) => ({ Place, Name, AvatarUrl: null, Score, Contributed: Score, Best: Score / 2, Attempts: 3, IsMe });
+const goalEntry = (Place, Name, Score, IsMe = false) => ({ Place, Name, AvatarUrl: null, Score, Contributed: Score, Best: Score / 2,
+  BestStrikeId: Place === 1 ? GOAL_STRIKE_ID : null, Attempts: 3, IsMe });
+
+/** GET /CommunityGoal/goal/{id}/strike/{strikeId}: the leader's best strike with the game's data. */
+export const GOAL_STRIKE = {
+  StrikeId: GOAL_STRIKE_ID, GoalId: GOAL_ID, Name: 'Rival', AvatarUrl: 'https://cdn.example/rival.png', Accepted: 1050000,
+  CompletedAt: '2026-11-16T09:30:00Z', StrikeData: '{"build":["gauss","gauss"],"seed":42}', IsMe: false,
+};
 
 /** GET /CommunityGoal/goal/{id}/leaderboard: page 1 of many, the player 4th with the rows around. */
 export const GOAL_LEADERBOARD = {
@@ -681,6 +692,7 @@ export function defaultRoutes() {
     [`GET /CommunityGoal/goal/${GOAL_ID}/live`]: json(COMMUNITY_GOAL_LIVE),
     [`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`]: json(GOAL_LEADERBOARD),
     [`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`]: json(GOAL_HISTORY),
+    [`GET /CommunityGoal/goal/${GOAL_ID}/strike/${GOAL_STRIKE_ID}`]: json(GOAL_STRIKE),
     'POST /CommunityGoal/attempt/start': json(GOAL_ATTEMPT_START),
     'POST /CommunityGoal/attempt/complete': json(GOAL_ATTEMPT_RESULT),
 

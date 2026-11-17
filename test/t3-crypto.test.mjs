@@ -80,7 +80,7 @@ for (const { name, mod } of builds) {
       ctx.state.attempt = attempt;
       await ctx.sdk.ReportGhostResult(GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Draw, 'fight-hash-01');
       await ctx.sdk.CompleteGoalAttempt({ AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID }, 1500000,
-        { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1' });
+        { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1', strikeData: '{"build":["gauss"],"seed":7}' });
       await ctx.sdk.CreateSession_Client('{"level":1,"hp":50}', mod.GameTypeEnum.Rooms, eventId, sessionId);
       await ctx.sdk.ResultTournament_Server(TOURNAMENT_ID, saveScoreId, 5000, 1058, true);
     }, { routes: defaultRoutes() });
@@ -119,7 +119,8 @@ for (const { name, mod } of builds) {
     const goal = JSON.parse(find('/CommunityGoal/attempt/complete').body);
     assert.equal(goal.AttemptId, GOAL_ATTEMPT_ID);
     assert.deepEqual(JSON.parse(serverDecrypt(goal.EncryptedData, payloadAesKey(GOAL_ATTEMPT_ID, PRIV))),
-      { AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Contribution: 1500000, ClientDurationSeconds: 58.5, Metrics: { hits: 42 }, FightHash: 'fh-1' });
+      { AttemptId: GOAL_ATTEMPT_ID, GoalId: GOAL_ID, Contribution: 1500000, ClientDurationSeconds: 58.5, Metrics: { hits: 42 }, FightHash: 'fh-1',
+        StrikeData: '{"build":["gauss"],"seed":7}' });
     assert.equal(goal.Hash, serverHmac(goal.EncryptedData, payloadHmacKey(PRIV)));
 
     // Saved session: Data and Hash of the created session.

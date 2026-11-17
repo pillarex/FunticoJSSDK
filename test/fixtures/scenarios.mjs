@@ -12,7 +12,7 @@ import {
   BALANCE, ROOM_A, ROOM_B, ROOM_C, ROOM_D, VOUCHERS, VOUCHERS_SPENT, LEADERS, TOURNAMENT_ID, TOURNAMENT_LEADERBOARD, TOURNAMENT_HISTORY,
   CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession, GHOST_MATCH_ID,
   GOAL_CHAIN_KEY, GOAL_ID, NEXT_GOAL_ID, GOAL_ATTEMPT_ID, GOAL_ATTEMPT, GOAL_ATTEMPT_START, COMMUNITY_GOAL_LIVE, communityGoal,
-  COMMUNITY_GOAL_SETTLED,
+  COMMUNITY_GOAL_SETTLED, GOAL_STRIKE_ID,
 } from './wire.mjs';
 
 const tokenConfig = (mod, extra) => config(mod, { userToken: PLATFORM_TOKEN, ...extra });
@@ -888,11 +888,12 @@ export const SCENARIOS = [
       ctx.check(anon.Goal.GoalId === GOAL_ID && Array.isArray(anon.Goal.MilestonesPassed) && anon.Goal.MilestonesPassed.length === 0, 'null MilestonesPassed becomes []');
       ctx.check(anon.Chain.Milestones.length === 3 && anon.Me.AttemptsLeftToday === 1 && anon.Me.OpenAttempt === null, 'state mapped');
       const [b1, b2, b3] = anon.Goal.Rewards;
-      ctx.check(anon.Goal.Rewards.length === 3 && b1.Label === '#1' && b1.MaxPlace === 1 && b1.Display[0].Amount === 3 && b2.MaxPercentile === 10 && b2.Display.length === 0,
+      ctx.check(anon.Goal.Rewards.length === 3 && b1.Label === '#1' && b1.MaxPlace === 1 && b1.Display[0].Amount === 3 && b1.Display[0].Code === 'core_plasma' && b2.MaxPercentile === 10 && b2.Display.length === 0,
         'reward brackets mapped, null Display becomes []');
-      ctx.check(b3.Label === null && b3.MaxPlace === null && b3.MaxPercentile === null && b3.AnyContribution && b3.Display[0].ImageUrl === null && b3.Display[0].Amount === null,
+      ctx.check(b3.Label === null && b3.MaxPlace === null && b3.MaxPercentile === null && b3.AnyContribution && b3.Display[0].ImageUrl === null && b3.Display[0].Amount === null && b3.Display[0].Code === null,
         'missing bracket fields become null');
       ctx.check(anon.Me.Best === 1500000 && anon.Me.RewardStatus === null && Array.isArray(anon.Me.Rewards) && anon.Me.Rewards.length === 0, 'Me: best strike, no reward state yet');
+      ctx.check(anon.Goal.StrikeCount === 128 && anon.Goal.ClosedBy === null, 'open goal: strike count, no last hit');
       await ctx.call('StartGoalAttempt', GOAL_ID);
       ctx.check(/not authenticated/.test(ctx.lastError()?.message), 'attempts need sign-in');
 
@@ -904,12 +905,17 @@ export const SCENARIOS = [
       ctx.check(lastRequest(ctx).url.endsWith('/CommunityGoal/key%20with%20spaces%2F%26'), 'chain key encoded into one path segment');
 
       const live = await ctx.call('GetCommunityGoalLive', GOAL_ID);
-      ctx.check(live.CurrentValue === 701500 && live.PollAfterSeconds === 7 && live.NextGoalId === null, 'live mapped');
+      ctx.check(live.CurrentValue === 701500 && live.PollAfterSeconds === 7 && live.NextGoalId === null && live.StrikeCount === 129, 'live mapped');
 
       const start = await ctx.call('StartGoalAttempt', GOAL_ID);
       ctx.check(lastRequest(ctx).method === 'POST' && lastRequest(ctx).url.endsWith(`/CommunityGoal/attempt/start?goalId=${GOAL_ID}`), 'start url');
       ctx.check(start.Attempt.AttemptId === GOAL_ATTEMPT_ID && start.Goal.PayloadJson.includes('Warden') && !start.Resumed, 'start mapped');
       ctx.check(start.Attempt.GoalValueAtStart === 700000 && start.Attempt.MilestonesAtStart[0] === 0.25, 'start snapshot mapped');
+      ctx.check(!lastRequest(ctx).body && lastRequest(ctx).headers['Content-Type'] === undefined, 'start without startData sends no body');
+      ctx.check(start.Attempt.StartData === '{"ship":"nova7"}', 'StartData mapped');
+      await ctx.call('StartGoalAttempt', GOAL_ID, { startData: '{"ship":"vega"}' });
+      ctx.check(lastBody(ctx).StartData === '{"ship":"vega"}' && lastRequest(ctx).headers['Content-Type'] === 'application/json' && lastRequest(ctx).url.endsWith(`?goalId=${GOAL_ID}`),
+        'start with startData sends it as JSON');
 
       const result = await ctx.call('CompleteGoalAttempt', start.Attempt, 5000000, { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1' });
       ctx.check(lastBody(ctx).AttemptId === GOAL_ATTEMPT_ID && /^[0-9a-f]{64}$/.test(lastBody(ctx).Hash) && !lastRequest(ctx).body.includes('5000000'), 'completion travels encrypted');
@@ -931,6 +937,13 @@ export const SCENARIOS = [
       ctx.check(lastRequest(ctx).url.endsWith(`/CommunityGoal/goal/${GOAL_ID}/leaderboard?page=1&limit=20`), 'leaderboard defaults');
       ctx.check(board.Items.length === 2 && board.Items[1].Name === null && board.Me.Place === 4 && board.Around.length === 3, 'leaderboard mapped');
       ctx.check(board.Items[0].Best === 1050000 && board.Me.Best === 750000 && board.Around[2].Best === 750000, 'leaderboard rows carry the best strike');
+      ctx.check(board.Items[0].BestStrikeId === GOAL_STRIKE_ID && board.Items[1].BestStrikeId === null, 'rows name the best strike');
+      const strike = await ctx.call('GetCommunityGoalStrike', GOAL_ID, GOAL_STRIKE_ID);
+      ctx.check(lastRequest(ctx).url === `${API}/CommunityGoal/goal/${GOAL_ID}/strike/${GOAL_STRIKE_ID}` && lastRequest(ctx).headers.Authorization === `Bearer ${JWT}`, 'strike url');
+      ctx.check(strike.Accepted === 1050000 && strike.StrikeData === '{"build":["gauss","gauss"],"seed":42}' && strike.Name === 'Rival' && !strike.IsMe, 'strike mapped, data byte for byte');
+      ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}/strike/${GOAL_STRIKE_ID}`, json({ StrikeId: GOAL_STRIKE_ID, GoalId: GOAL_ID, Accepted: 5, CompletedAt: '2026-11-16T09:30:00Z' }));
+      const bare = await ctx.call('GetCommunityGoalStrike', GOAL_ID, GOAL_STRIKE_ID);
+      ctx.check(bare.Name === null && bare.AvatarUrl === null && bare.StrikeData === null, 'missing strike fields become null');
       await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID, 3, 50);
       ctx.check(lastRequest(ctx).url.endsWith('?page=3&limit=50'), 'leaderboard paging');
 
@@ -938,6 +951,8 @@ export const SCENARIOS = [
       ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}`, json(COMMUNITY_GOAL_SETTLED));
       const settledGoal = await ctx.call('GetCommunityGoalById', GOAL_ID);
       const [paid, waiting] = settledGoal.Me.Rewards;
+      ctx.check(settledGoal.Goal.ClosedBy.Name === 'Ace' && settledGoal.Goal.ClosedBy.Accepted === 2833 && settledGoal.Goal.ClosedBy.AvatarUrl === null && settledGoal.Goal.StrikeCount === 4210,
+        'settled goal: last hit and strike count');
       ctx.check(settledGoal.Goal.Status === 'Settled' && settledGoal.Me.Bracket === 'place1' && settledGoal.Me.RewardStatus === 'Delivered' && settledGoal.Me.Rewards.length === 2,
         'settled goal: bracket, reward status, rewards');
       ctx.check(paid.Source === 'CommunityGoal' && paid.Items[0].Name === 'Plasma Core' && paid.Items[0].ImageUrl === null && paid.DeliveredAt === '2026-11-16T20:11:02Z',
@@ -952,6 +967,7 @@ export const SCENARIOS = [
         'history mapped');
       ctx.check(history.Items[1].Me.Share === 0.88 && history.Items[1].Me.Best === 1500000 && history.Items[1].LifetimeSeconds === 43200 && history.Items[1].Me.RewardStatus === 'Delivered',
         'history entry: share, best, lifetime, reward status');
+      ctx.check(history.Items[0].ClosedBy === null && history.Items[1].ClosedBy.IsMe && history.Items[1].StrikeCount === 4210, 'history: last hit and strike count');
       ctx.route('GET /CommunityGoal/key%20with%20spaces%2F%26/history', json({ Items: [], Total: 0, Page: 2, Limit: 5, HasMore: false }));
       await ctx.call('GetCommunityGoalHistory', 'key with spaces/&', 2, 5);
       ctx.check(lastRequest(ctx).url.endsWith('/CommunityGoal/key%20with%20spaces%2F%26/history?page=2&limit=5'), 'history paging, chain key encoded');
@@ -964,6 +980,7 @@ export const SCENARIOS = [
       }));
       const sparseHistory = await ctx.call('GetCommunityGoalHistory', GOAL_CHAIN_KEY);
       const [h1, h2] = sparseHistory.Items;
+      ctx.check(h1.StrikeCount === 0 && h1.ClosedBy === null, 'missing history strike fields become 0/null');
       ctx.check(h1.ClosedAt === null && h1.Me.FinalPlace === null && h1.Me.Bracket === null && h1.Me.RewardStatus === null && h2.Me === null,
         'missing history fields become null');
       ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`, json({ Total: 0, Page: 1, Limit: 10, HasMore: false }));
@@ -1000,6 +1017,10 @@ export const SCENARIOS = [
         [`GET /CommunityGoal/goal/${GOAL_ID}/live`, 'GetCommunityGoalLive', [GOAL_ID],
           json({ Error: 'BrandNewCode', Message: 'Future' }, 400), mod.CommunityGoalErrorCode.Unknown],
         [`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, 'GetCommunityGoalLeaderboard', [GOAL_ID], text('Bad Gateway', 502), mod.CommunityGoalErrorCode.Unknown],
+        ['POST /CommunityGoal/attempt/start', 'StartGoalAttempt', [GOAL_ID, { startData: 'x' }],
+          json({ Error: 'DataTooLarge', Message: 'Too long' }, 400), mod.CommunityGoalErrorCode.DataTooLarge],
+        [`GET /CommunityGoal/goal/${GOAL_ID}/strike/${GOAL_STRIKE_ID}`, 'GetCommunityGoalStrike', [GOAL_ID, GOAL_STRIKE_ID],
+          json({ Error: 'StrikeNotFound', Message: 'Gone' }, 400), mod.CommunityGoalErrorCode.StrikeNotFound],
         [`GET /CommunityGoal/${GOAL_CHAIN_KEY}/history`, 'GetCommunityGoalHistory', [GOAL_CHAIN_KEY],
           json({ Error: 'ChainNotFound', Message: 'No chain' }, 400), mod.CommunityGoalErrorCode.ChainNotFound],
       ];
@@ -1025,6 +1046,7 @@ export const SCENARIOS = [
       }));
       const resumed = await ctx.call('StartGoalAttempt', GOAL_ID);
       ctx.check(resumed.Resumed && resumed.Goal.MilestonesPassed.length === 0 && resumed.Attempt.MilestonesAtStart.length === 0, 'resumed attempt mapped, null lists become []');
+      ctx.check(resumed.Attempt.StartData === '{"ship":"nova7"}' && resumed.Goal.StrikeCount === 128, 'resumed attempt keeps its StartData');
       ctx.route(`GET /CommunityGoal/${GOAL_CHAIN_KEY}`, json({
         Chain: { Key: GOAL_CHAIN_KEY, Milestones: [0.5] }, Goal: communityGoal(), AwaitingNext: false, PollAfterSeconds: 5,
         Me: { IsContributor: false, Score: 0, Place: null, Contributed: 0, Attempts: 0, AttemptsUsedToday: 1, AttemptsLeftToday: 2,
@@ -1043,7 +1065,8 @@ export const SCENARIOS = [
       const emptyBoard = await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID);
       ctx.check(emptyBoard.Items.length === 0 && emptyBoard.Around.length === 0 && emptyBoard.Me === null, 'missing leaderboard lists become []/null');
       ctx.route(`GET /CommunityGoal/goal/${GOAL_ID}/leaderboard`, json({ GoalId: GOAL_ID, Items: [{ Place: 1, Name: 'Old', Score: 5 }], Total: 1, Page: 1, Limit: 20, HasMore: false }));
-      ctx.check((await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID)).Items[0].Best === 0, 'a row without Best reads 0');
+      const oldRow = (await ctx.call('GetCommunityGoalLeaderboard', GOAL_ID)).Items[0];
+      ctx.check(oldRow.Best === 0 && oldRow.BestStrikeId === null, 'a row without Best reads 0, without BestStrikeId null');
     },
   },
 

@@ -108,6 +108,7 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`CompleteGoalAttempt`](#completegoalattempt)
    - [`GetCommunityGoalLeaderboard`](#getcommunitygoalleaderboard)
    - [`GetCommunityGoalHistory`](#getcommunitygoalhistory)
+   - [`GetCommunityGoalStrike`](#getcommunitygoalstrike)
    - [`CommunityGoalError`](#communitygoalerror)
 10. [Client Session Methods (Reconnection)](#client-session-methods-reconnection)
    - [`UserHasUnfinishedSession_Client`](#userhasunfinishedsession_client)
@@ -3132,9 +3133,9 @@ GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>
 - `Me` (`CommunityGoalMe | null`) - `null` before sign-in.
 - `PollAfterSeconds` (`number`) - Poll the live value no more often than this.
 
-**CommunityGoal Properties:** `GoalId`, `Number` (1, 2, 3... within the chain), `Name`, `Status` (`'Open' | 'Closed' | 'Settled'`), `TargetValue`, `CurrentValue` (may pass the target: late attempts still count), `Progress` (0..1), `MilestonesPassed`, `OpenedAt`, `ClosedAt`, `ContributorCount`, `PayloadJson` (your game's data, a JSON string), `NextGoalId` (set once the goal is no longer open and the next one exists) and `Rewards` (the reward brackets, see below).
+**CommunityGoal Properties:** `GoalId`, `Number` (1, 2, 3... within the chain), `Name`, `Status` (`'Open' | 'Closed' | 'Settled'`), `TargetValue`, `CurrentValue` (may pass the target: late attempts still count), `Progress` (0..1), `MilestonesPassed`, `OpenedAt`, `ClosedAt`, `ContributorCount`, `StrikeCount` (completed strikes, every player's), `ClosedBy` (who landed the hit that reached the target: `Name`, `AvatarUrl`, `Accepted`, `IsMe`; `null` while open or when the goal was closed by hand), `PayloadJson` (your game's data, a JSON string), `NextGoalId` (set once the goal is no longer open and the next one exists) and `Rewards` (the reward brackets, see below).
 
-**CommunityGoalBracket Properties:** `Name` (the key `Me.Bracket` names), `Label` (what to show, e.g. `'#1'` or `'TOP 10%'`; may be `null`), exactly one of `MaxPlace` (final places 1..MaxPlace), `MaxPercentile` (final place × 100 / contributors at most this) or `AnyContribution` (everyone who contributed), and `Display` (what the bracket pays, as configured for display: `Name`, `ImageUrl`, `Amount`). The actual items are drawn when the goal settles.
+**CommunityGoalBracket Properties:** `Name` (the key `Me.Bracket` names), `Label` (what to show, e.g. `'#1'` or `'TOP 10%'`; may be `null`), exactly one of `MaxPlace` (final places 1..MaxPlace), `MaxPercentile` (final place × 100 / contributors at most this) or `AnyContribution` (everyone who contributed), and `Display` (what the bracket pays, as configured for display: `Name`, `Code` (your game's own key for the entry, such as an item key or a key for a random pool; recognise entries by it, not by `Name`), `ImageUrl`, `Amount`). The actual items are drawn when the goal settles.
 
 **CommunityGoalMe Properties:** `IsContributor`, `Score`, `Place` (`null` until the player contributes), `Contributed`, `Best` (the player's best strike on this goal), `Attempts` (completed on this goal), `AttemptsUsedToday`, `AttemptsLeftToday` (`null` = no limit), `ResetsAt`, `OpenAttempt` (the player's live attempt, if any), and for settled goals `FinalPlace`, `Bracket` (the reward bracket of that place), `RewardStatus` and `Rewards`.
 
@@ -3170,7 +3171,7 @@ The shared state only: value, status, milestones, contributor count. Cheap and c
 GetCommunityGoalLive(goalId: string): Promise<CommunityGoalLive>
 ```
 
-**Returns:** `CommunityGoalLive` with `GoalId`, `Number`, `Status`, `TargetValue`, `CurrentValue`, `Progress`, `MilestonesPassed`, `ContributorCount`, `NextGoalId`, `PollAfterSeconds` and `ServerTime`.
+**Returns:** `CommunityGoalLive` with `GoalId`, `Number`, `Status`, `TargetValue`, `CurrentValue`, `Progress`, `MilestonesPassed`, `ContributorCount`, `StrikeCount`, `NextGoalId`, `PollAfterSeconds` and `ServerTime`.
 
 ---
 
@@ -3203,16 +3204,18 @@ Starts an attempt on an open goal, spending one of today's attempts, or returns 
 
 **Signature:**
 ```typescript
-StartGoalAttempt(goalId: string): Promise<GoalAttemptStart>
+StartGoalAttempt(goalId: string, options?: StartGoalAttemptOptions): Promise<GoalAttemptStart>
 ```
 
 **Returns:** `GoalAttemptStart`:
-- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart` and `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in). All of them are the same on every resume.
+- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart`, `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in) and `StartData` (what you passed as `options.startData`, unchanged; `null` if none). All of them are the same on every resume.
 - `Resumed` (`boolean`) - `true` when the live attempt was returned again (nothing spent).
 - `Goal` (`CommunityGoal`) - The goal of the attempt, with its payload and its current state. On a resumed attempt the goal may have passed more milestones since the start; play in the phase of `Attempt.MilestonesAtStart`.
 - `AttemptsLeftToday`, `ResetsAt`.
 
-Rejects with `GoalClosed` (load `NextGoalId`: the next goal has its own data) or `NoAttemptsLeft` (see `ResetsAt`). Requires a signed-in player.
+`options.startData` (optional, up to 8 KB in UTF-8) is your own data for the attempt, for example the build it starts with. It is kept with a new attempt and comes back in `Attempt.StartData` on every resume and in `Me.OpenAttempt`, so an unfinished strike can be continued with the same build on another device. When the live attempt is returned again, a new `startData` is ignored: the first one stays.
+
+Rejects with `GoalClosed` (load `NextGoalId`: the next goal has its own data), `NoAttemptsLeft` (see `ResetsAt`) or `DataTooLarge` (nothing spent). Requires a signed-in player.
 
 ---
 
@@ -3229,6 +3232,7 @@ CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribu
 - `attempt` - The `Attempt` returned by `StartGoalAttempt` (or `Me.OpenAttempt`).
 - `contribution` - A whole number of 0 or more. Anything else is rejected with `InvalidContribution` before a request is made.
 - `options.clientDurationSeconds`, `options.metrics` (up to 16 numbers), `options.fightHash` - Optional, for analytics and later checks.
+- `options.strikeData` - Optional, up to 16 KB in UTF-8: your own data of the strike, for example the build and what a replay needs. It travels signed with the result. The one of each player's best strike is kept and can be read back from the leaderboard with `GetCommunityGoalStrike`. Too long: `DataTooLarge`, nothing counted and the attempt stays open, so send it again without it.
 
 **Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Best` (the player's best strike on this goal, this one included), `IsNewBest` (this contribution beat every earlier one of the player on this goal; the same on a replay), `Place`, `AttemptsLeftToday`, `ResetsAt` and `Replayed`.
 
@@ -3253,7 +3257,7 @@ Contributors of a goal ranked by score, the player's own row and the rows around
 GetCommunityGoalLeaderboard(goalId: string, page?: number, limit?: number): Promise<CommunityGoalLeaderboard>
 ```
 
-**Returns:** `CommunityGoalLeaderboard` with `GoalId`, `Items`, `Me`, `Around` (up to two rows above and below the player, the player included), `Total`, `Page`, `Limit` and `HasMore`. Each entry has `Place`, `Name`, `AvatarUrl`, `Score`, `Contributed`, `Best` (best strike), `Attempts` and `IsMe`. `limit` goes up to 100.
+**Returns:** `CommunityGoalLeaderboard` with `GoalId`, `Items`, `Me`, `Around` (up to two rows above and below the player, the player included), `Total`, `Page`, `Limit` and `HasMore`. Each entry has `Place`, `Name`, `AvatarUrl`, `Score`, `Contributed`, `Best` (best strike), `BestStrikeId` (that strike, for `GetCommunityGoalStrike`; `null` when there is none to show), `Attempts` and `IsMe`. `limit` goes up to 100.
 
 ---
 
@@ -3266,7 +3270,7 @@ The chain's past goals (closed or settled), newest first, with the signed-in pla
 GetCommunityGoalHistory(chainKey: string, page?: number, limit?: number): Promise<CommunityGoalHistory>
 ```
 
-**Returns:** `CommunityGoalHistory` with `Items`, `Total`, `Page`, `Limit` (default 10, up to 20) and `HasMore`. Each entry has `GoalId`, `Number`, `Name`, `Status`, `TargetValue`, `CurrentValue`, `OpenedAt`, `ClosedAt`, `LifetimeSeconds` (how long the goal held out), `ContributorCount`, `PayloadJson` and `Me`: `IsContributor`, `Score`, `Contributed`, `Best`, `Attempts`, `Share` (`Contributed` / the goal's `CurrentValue`, 0..1), `FinalPlace`, `Bracket` and `RewardStatus`.
+**Returns:** `CommunityGoalHistory` with `Items`, `Total`, `Page`, `Limit` (default 10, up to 20) and `HasMore`. Each entry has `GoalId`, `Number`, `Name`, `Status`, `TargetValue`, `CurrentValue`, `OpenedAt`, `ClosedAt`, `LifetimeSeconds` (how long the goal held out), `ContributorCount`, `StrikeCount`, `ClosedBy` (who landed the last hit; `null` when closed by hand), `PayloadJson` and `Me`: `IsContributor`, `Score`, `Contributed`, `Best`, `Attempts`, `Share` (`Contributed` / the goal's `CurrentValue`, 0..1), `FinalPlace`, `Bracket` and `RewardStatus`.
 
 **Usage:**
 ```javascript
@@ -3279,6 +3283,21 @@ const share = closed.Me ? closed.Me.Contributed / closed.Goal.CurrentValue : 0;
 const history = await sdk.GetCommunityGoalHistory('world-boss');
 for (const past of history.Items) addPastBoss(past.Name, past.LifetimeSeconds, past.Me && past.Me.FinalPlace, past.Me && past.Me.RewardStatus);
 ```
+
+---
+
+### `GetCommunityGoalStrike`
+
+A player's best strike on a goal, by the `BestStrikeId` of their leaderboard row, with the `strikeData` sent with it: for example to show their ship, copy the build or replay the strike. Works before sign-in.
+
+**Signature:**
+```typescript
+GetCommunityGoalStrike(goalId: string, strikeId: string): Promise<CommunityGoalStrike>
+```
+
+**Returns:** `CommunityGoalStrike` with `StrikeId`, `GoalId`, `Name`, `AvatarUrl`, `Accepted` (what the strike counted), `CompletedAt`, `StrikeData` (exactly as sent; `null` when none was sent) and `IsMe`.
+
+Rejects with `StrikeNotFound` when it is no longer that player's best (they struck harder since, or were removed): reload the leaderboard.
 
 ---
 
@@ -3296,6 +3315,8 @@ The error every Community Goal method rejects with. Besides `Code` it carries `N
 - `CompletionTooFast` - Completed faster than the chain allows; the attempt is spent with no contribution.
 - `InvalidSignature` - The result could not be verified. Check your game's private key.
 - `InvalidContribution` - The contribution is not a whole number of 0 or more.
+- `DataTooLarge` - `startData` (8 KB) or `strikeData` (16 KB) is too long in UTF-8. Nothing was spent or counted; the attempt stays open.
+- `StrikeNotFound` - No such best strike on this goal any more. Reload the leaderboard.
 - `Unknown` - The response carried no recognisable code.
 
 ---

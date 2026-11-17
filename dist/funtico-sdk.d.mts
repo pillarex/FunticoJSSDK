@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 795c696edae8) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 23a06a0d9bd6) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -1102,6 +1102,10 @@ export declare enum CommunityGoalErrorCode {
     CompletionTooFast = "CompletionTooFast",
     InvalidSignature = "InvalidSignature",
     InvalidContribution = "InvalidContribution",
+    /** startData (8 KB) or strikeData (16 KB) is too long in UTF-8; nothing was spent or counted, the attempt stays open. */
+    DataTooLarge = "DataTooLarge",
+    /** No such best strike on this goal any more (the player has struck harder since, or was removed). */
+    StrikeNotFound = "StrikeNotFound",
     /** The response carried no recognisable code. */
     Unknown = "Unknown"
 }
@@ -1148,6 +1152,10 @@ export interface CommunityGoal {
     OpenedAt: string;
     ClosedAt: string | null;
     ContributorCount: number;
+    /** Completed strikes on this goal, every player's. */
+    StrikeCount: number;
+    /** Who landed the hit that reached the target; null while open, or when the goal was closed by hand. */
+    ClosedBy: CommunityGoalClosedBy | null;
     /** Your game's data for this goal, exactly as configured (a JSON string). */
     PayloadJson: string;
     /** When the goal is no longer open: the goal opened after it, if any. */
@@ -1175,6 +1183,8 @@ export interface CommunityGoalBracket {
 }
 export interface CommunityGoalRewardDisplay {
     Name: string;
+    /** Your game's own key for the entry (an item key, or a key for a random pool), as configured. Recognise entries by this, not by Name. May be null. */
+    Code: string | null;
     ImageUrl: string | null;
     Amount: number | null;
 }
@@ -1197,6 +1207,38 @@ export interface GoalAttempt {
     GoalValueAtStart: number;
     /** Milestones the goal had passed when the attempt started: the phase to play the attempt in. */
     MilestonesAtStart: number[];
+    /** What you sent as startData when the attempt started, unchanged; the same on every resume. Null if none. */
+    StartData: string | null;
+}
+/** Who landed the hit that reached a goal's target. */
+export interface CommunityGoalClosedBy {
+    Name: string | null;
+    AvatarUrl: string | null;
+    /** What that hit counted. */
+    Accepted: number;
+    /** The signed-in player landed it. */
+    IsMe: boolean;
+}
+export interface StartGoalAttemptOptions {
+    /**
+     * Your own data for the attempt (for example the build it starts with), up to 8 KB in UTF-8. Stored as is
+     * and returned with the attempt, also on every resume, so another device can continue it. Ignored when the
+     * live attempt is returned again: the first one sent stays.
+     */
+    startData?: string;
+}
+/** A player's best strike on a goal, as GetCommunityGoalStrike returns it. */
+export interface CommunityGoalStrike {
+    StrikeId: string;
+    GoalId: string;
+    Name: string | null;
+    AvatarUrl: string | null;
+    /** What the strike counted. */
+    Accepted: number;
+    CompletedAt: string;
+    /** The strikeData sent with it, exactly; null when none was sent. */
+    StrikeData: string | null;
+    IsMe: boolean;
 }
 /** The signed-in player's own state in a chain and on a goal. */
 export interface CommunityGoalMe {
@@ -1248,6 +1290,8 @@ export interface CommunityGoalLive {
     Progress: number;
     MilestonesPassed: number[];
     ContributorCount: number;
+    /** Completed strikes on this goal, every player's. */
+    StrikeCount: number;
     NextGoalId: string | null;
     PollAfterSeconds: number;
     ServerTime: string;
@@ -1271,6 +1315,12 @@ export interface CompleteGoalAttemptOptions {
     metrics?: Record<string, number>;
     /** A hash of the attempt, up to 128 characters. */
     fightHash?: string;
+    /**
+     * Your own data of the strike (for example the build and what a replay needs), up to 16 KB in UTF-8; sent
+     * signed with the result. The one of each player's best strike is kept and can be read back from the
+     * leaderboard with GetCommunityGoalStrike.
+     */
+    strikeData?: string;
 }
 export interface GoalAttemptResult {
     AttemptId: string;
@@ -1310,6 +1360,8 @@ export interface CommunityGoalLeaderboardEntry {
     Contributed: number;
     /** The player's largest single accepted contribution to this goal. */
     Best: number;
+    /** That best strike, for GetCommunityGoalStrike; null when there is none to show. */
+    BestStrikeId: string | null;
     Attempts: number;
     IsMe: boolean;
 }
@@ -1334,6 +1386,10 @@ export interface CommunityGoalHistoryEntry {
     /** How long the goal held out, in seconds. */
     LifetimeSeconds: number;
     ContributorCount: number;
+    /** Completed strikes on this goal, every player's. */
+    StrikeCount: number;
+    /** Who landed the hit that reached the target; null when the goal was closed by hand. */
+    ClosedBy: CommunityGoalClosedBy | null;
     /** Your game's data for this goal, exactly as configured (a JSON string). */
     PayloadJson: string;
     /** The signed-in player's part in this goal; null when not signed in. */
@@ -1913,22 +1969,31 @@ export declare class FunticoSDK {
     /**
      * Starts an attempt on an open goal, spending one of today's attempts. If the player already has
      * a live attempt in the chain, that one is returned again (Resumed = true, nothing spent) - also
-     * when it belongs to another goal, so always play against the returned Goal.
+     * when it belongs to another goal, so always play against the returned Goal. options.startData is
+     * kept with a new attempt and comes back in Attempt.StartData on every resume.
      *
-     * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt).
+     * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt),
+     * `DataTooLarge`.
      */
-    StartGoalAttempt(goalId: string): Promise<GoalAttemptStart>;
+    StartGoalAttempt(goalId: string, options?: StartGoalAttemptOptions): Promise<GoalAttemptStart>;
     /**
      * Completes an attempt with its contribution, once: a repeat returns the first result
      * (Replayed = true). The result is encrypted and signed like a campaign completion. An attempt
      * started before its goal closed still counts in full.
      *
      * Rejects with CommunityGoalError: `AttemptExpired`, `CompletionTooFast` (the attempt is used),
-     * `InvalidContribution`.
+     * `InvalidContribution`, `DataTooLarge` (strikeData too long: nothing counted, send again without it).
      */
     CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribution: number, options?: CompleteGoalAttemptOptions): Promise<GoalAttemptResult>;
     /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
     GetCommunityGoalLeaderboard(goalId: string, page?: number, limit?: number): Promise<CommunityGoalLeaderboard>;
+    /**
+     * A player's best strike on a goal, by the BestStrikeId of their leaderboard row, with the strikeData
+     * sent with it (for example to copy the build or replay the strike). Works before sign-in.
+     *
+     * Rejects with CommunityGoalError: `StrikeNotFound` (no longer that player's best: reload the leaderboard).
+     */
+    GetCommunityGoalStrike(goalId: string, strikeId: string): Promise<CommunityGoalStrike>;
     /**
      * The chain's past goals (closed or settled), newest first, with the signed-in player's part in
      * each: score, best strike, share of the goal, final place, bracket and reward status. Up to 20
@@ -1946,6 +2011,7 @@ export declare class FunticoSDK {
     private getOptionalAuthHeaders;
     private mapCommunityGoalState;
     private mapGoalAttempt;
+    private mapClosedBy;
     private mapCommunityGoal;
     private throwCommunityGoalError;
     /**

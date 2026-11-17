@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 795c696edae8) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 23a06a0d9bd6) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -320,6 +320,10 @@ export var CommunityGoalErrorCode;
     CommunityGoalErrorCode["CompletionTooFast"] = "CompletionTooFast";
     CommunityGoalErrorCode["InvalidSignature"] = "InvalidSignature";
     CommunityGoalErrorCode["InvalidContribution"] = "InvalidContribution";
+    /** startData (8 KB) or strikeData (16 KB) is too long in UTF-8; nothing was spent or counted, the attempt stays open. */
+    CommunityGoalErrorCode["DataTooLarge"] = "DataTooLarge";
+    /** No such best strike on this goal any more (the player has struck harder since, or was removed). */
+    CommunityGoalErrorCode["StrikeNotFound"] = "StrikeNotFound";
     /** The response carried no recognisable code. */
     CommunityGoalErrorCode["Unknown"] = "Unknown";
 })(CommunityGoalErrorCode || (CommunityGoalErrorCode = {}));
@@ -2331,19 +2335,23 @@ export class FunticoSDK {
         if (!response.ok)
             await this.throwCommunityGoalError(response, "Failed to fetch the live goal state");
         const wire = await response.json();
-        return { ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], NextGoalId: wire.NextGoalId ?? null };
+        return { ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], StrikeCount: wire.StrikeCount ?? 0, NextGoalId: wire.NextGoalId ?? null };
     }
     /**
      * Starts an attempt on an open goal, spending one of today's attempts. If the player already has
      * a live attempt in the chain, that one is returned again (Resumed = true, nothing spent) - also
-     * when it belongs to another goal, so always play against the returned Goal.
+     * when it belongs to another goal, so always play against the returned Goal. options.startData is
+     * kept with a new attempt and comes back in Attempt.StartData on every resume.
      *
-     * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt).
+     * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt),
+     * `DataTooLarge`.
      */
-    async StartGoalAttempt(goalId) {
+    async StartGoalAttempt(goalId, options = {}) {
+        const hasData = typeof options.startData === 'string' && options.startData.length > 0;
         const response = await fetch(`${this.apiUri}/CommunityGoal/attempt/start?goalId=${encodeURIComponent(goalId)}`, {
             method: "POST",
-            headers: this.getAuthHeaders(false)
+            headers: this.getAuthHeaders(hasData),
+            ...(hasData ? { body: JSON.stringify({ StartData: options.startData }) } : {})
         });
         if (!response.ok)
             await this.throwCommunityGoalError(response, "Failed to start a goal attempt");
@@ -2356,7 +2364,7 @@ export class FunticoSDK {
      * started before its goal closed still counts in full.
      *
      * Rejects with CommunityGoalError: `AttemptExpired`, `CompletionTooFast` (the attempt is used),
-     * `InvalidContribution`.
+     * `InvalidContribution`, `DataTooLarge` (strikeData too long: nothing counted, send again without it).
      */
     async CompleteGoalAttempt(attempt, contribution, options = {}) {
         const headers = this.getAuthHeaders();
@@ -2373,7 +2381,8 @@ export class FunticoSDK {
             Contribution: contribution,
             ClientDurationSeconds: options.clientDurationSeconds ?? null,
             Metrics: options.metrics ?? null,
-            FightHash: options.fightHash ?? null
+            FightHash: options.fightHash ?? null,
+            StrikeData: options.strikeData ?? null
         });
         const encryptionKey = id.substring(0, 8) + this.config.privateGameKey.substring(0, 8);
         const encryptedData = await CryptoHelper.encrypt(plainText, encryptionKey);
@@ -2400,8 +2409,23 @@ export class FunticoSDK {
         if (!response.ok)
             await this.throwCommunityGoalError(response, "Failed to fetch the goal leaderboard");
         const wire = await response.json();
-        const entry = (row) => ({ ...row, Best: row.Best ?? 0 });
+        const entry = (row) => ({ ...row, Best: row.Best ?? 0, BestStrikeId: row.BestStrikeId ?? null });
         return { ...wire, Items: (wire.Items ?? []).map(entry), Around: (wire.Around ?? []).map(entry), Me: wire.Me ? entry(wire.Me) : null };
+    }
+    /**
+     * A player's best strike on a goal, by the BestStrikeId of their leaderboard row, with the strikeData
+     * sent with it (for example to copy the build or replay the strike). Works before sign-in.
+     *
+     * Rejects with CommunityGoalError: `StrikeNotFound` (no longer that player's best: reload the leaderboard).
+     */
+    async GetCommunityGoalStrike(goalId, strikeId) {
+        const response = await fetch(`${this.apiUri}/CommunityGoal/goal/${encodeURIComponent(goalId)}/strike/${encodeURIComponent(strikeId)}`, {
+            headers: this.getOptionalAuthHeaders()
+        });
+        if (!response.ok)
+            await this.throwCommunityGoalError(response, "Failed to fetch the strike");
+        const wire = await response.json();
+        return { ...wire, Name: wire.Name ?? null, AvatarUrl: wire.AvatarUrl ?? null, StrikeData: wire.StrikeData ?? null };
     }
     /**
      * The chain's past goals (closed or settled), newest first, with the signed-in player's part in
@@ -2421,6 +2445,8 @@ export class FunticoSDK {
             Items: (wire.Items ?? []).map(item => ({
                 ...item,
                 ClosedAt: item.ClosedAt ?? null,
+                StrikeCount: item.StrikeCount ?? 0,
+                ClosedBy: this.mapClosedBy(item.ClosedBy),
                 Me: item.Me
                     ? { ...item.Me, FinalPlace: item.Me.FinalPlace ?? null, Bracket: item.Me.Bracket ?? null, RewardStatus: item.Me.RewardStatus ?? null }
                     : null
@@ -2517,20 +2543,26 @@ export class FunticoSDK {
     mapGoalAttempt(wire) {
         if (!wire)
             return null;
-        return { ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [] };
+        return { ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [], StartData: wire.StartData ?? null };
+    }
+    mapClosedBy(wire) {
+        if (!wire)
+            return null;
+        return { ...wire, Name: wire.Name ?? null, AvatarUrl: wire.AvatarUrl ?? null, IsMe: wire.IsMe ?? false };
     }
     mapCommunityGoal(wire) {
         if (!wire)
             return null;
         return {
             ...wire, MilestonesPassed: wire.MilestonesPassed ?? [], ClosedAt: wire.ClosedAt ?? null, NextGoalId: wire.NextGoalId ?? null,
+            StrikeCount: wire.StrikeCount ?? 0, ClosedBy: this.mapClosedBy(wire.ClosedBy),
             Rewards: (wire.Rewards ?? []).map(bracket => ({
                 ...bracket,
                 Label: bracket.Label ?? null,
                 MaxPlace: bracket.MaxPlace ?? null,
                 MaxPercentile: bracket.MaxPercentile ?? null,
                 AnyContribution: bracket.AnyContribution ?? false,
-                Display: (bracket.Display ?? []).map(shown => ({ ...shown, ImageUrl: shown.ImageUrl ?? null, Amount: shown.Amount ?? null }))
+                Display: (bracket.Display ?? []).map(shown => ({ ...shown, Code: shown.Code ?? null, ImageUrl: shown.ImageUrl ?? null, Amount: shown.Amount ?? null }))
             }))
         };
     }
