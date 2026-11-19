@@ -340,6 +340,71 @@ export const SCENARIOS = [
 
   // -------------------------------------------------------------------------------------------
   {
+    name: 'JoinExternalMatch: join without a quote, start under the shared match id, rejoin, password, errors',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', tokenConfig(mod));
+      const EXT_ROOM = 'EEEE0001-ABCD-4EF0-9ABC-0000000000E1';
+      const MATCH = '5A1B2C3D-0000-4000-8000-00000000AB12';
+      const room = EXT_ROOM.toLowerCase();
+      const match = MATCH.toLowerCase();
+
+      // 1. A fresh registration: join-room without a lobby quote, then start-room-sp under the match id.
+      ctx.route('POST /Rooms/join-room', json({ id: 'join-ext-0001', game_session_id_or_match_id: null, lobby_quote: null }));
+      ctx.route('POST /Rooms/start-room-sp', req => json({
+        id: req.url.searchParams.get('sessionOrMatchId'),
+        game_session_id_or_match_id: null,
+        lobby_quote: null,
+      }));
+      const n1 = ctx.requests.length;
+      const s1 = await ctx.call('JoinExternalMatch', EXT_ROOM, MATCH);
+      ctx.check(s1.EventId === EXT_ROOM && s1.SessionOrMatchId === match, 'the session is the match');
+      ctx.check(ctx.requests.length === n1 + 2, 'join-room + start-room-sp only');
+      const join = new URL(ctx.requests[n1].url);
+      ctx.check(join.pathname === '/Rooms/join-room' && join.searchParams.get('getLobbyQuote') === 'false'
+        && /^[0-9a-f-]{36}$/.test(join.searchParams.get('idempotencyKey')), 'join without a quote');
+      const joinBody = JSON.parse(ctx.requests[n1].body);
+      ctx.check(joinBody.tournamentId === room && joinBody.password === '' && joinBody.UseVoucher === false
+        && joinBody.communityId === null, 'join body');
+      const start = new URL(ctx.requests[n1 + 1].url);
+      ctx.check(start.pathname === '/Rooms/start-room-sp' && start.searchParams.get('eventId') === room
+        && start.searchParams.get('sessionOrMatchId') === match && start.searchParams.get('isLobby') === 'false', 'start under the match');
+
+      // 2. Password and voucher: the password travels encrypted with the room id.
+      await ctx.call('JoinExternalMatch', EXT_ROOM, MATCH, 'open sesame', true);
+      const pwBody = JSON.parse(ctx.requests[ctx.requests.length - 2].body);
+      ctx.check(pwBody.password === serverEncrypt('open sesame', room) && pwBody.UseVoucher === true, 'encrypted password, voucher');
+
+      // 3. Already registered in this match (any letter case): no second start.
+      ctx.route('POST /Rooms/join-room', json({ id: 'join-ext-0002', game_session_id_or_match_id: MATCH, lobby_quote: null }));
+      const n3 = ctx.requests.length;
+      const s3 = await ctx.call('JoinExternalMatch', EXT_ROOM, MATCH);
+      ctx.check(s3.SessionOrMatchId === match && ctx.requests.length === n3 + 1, 'a rejoin skips the start');
+
+      // 4. Another unfinished game in this room: rejected before the start.
+      ctx.route('POST /Rooms/join-room', json({ id: 'join-ext-0003', game_session_id_or_match_id: '11111111-0000-4000-8000-000000000001', lobby_quote: null }));
+      const n4 = ctx.requests.length;
+      await ctx.call('JoinExternalMatch', EXT_ROOM, MATCH);
+      ctx.check(/unfinished game 11111111-0000-4000-8000-000000000001/.test(ctx.lastError()?.message)
+        && ctx.requests.length === n4 + 1, 'the unfinished game is named, nothing started');
+
+      // 5. Ids are checked before the network; server errors carry the server's text.
+      const n5 = ctx.requests.length;
+      await ctx.call('JoinExternalMatch', ROOM_A.id, MATCH);
+      await ctx.call('JoinExternalMatch', EXT_ROOM, 'not-a-uuid');
+      ctx.check(ctx.requests.length === n5, 'bad ids never reach the network');
+      ctx.route('POST /Rooms/join-room', text('INSUFFICIENT_FUNDS', 400));
+      await ctx.call('JoinExternalMatch', EXT_ROOM, MATCH);
+      ctx.check(/INSUFFICIENT_FUNDS/.test(ctx.lastError()?.message), 'server text in the join error');
+      ctx.route('POST /Rooms/join-room', json({ id: 'join-ext-0004', game_session_id_or_match_id: null, lobby_quote: null }));
+      ctx.route('POST /Rooms/start-room-sp', text('Match is full', 400));
+      await ctx.call('JoinExternalMatch', EXT_ROOM, MATCH);
+      ctx.check(ctx.lastError() !== undefined, 'a refused start rejects');
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
     name: 'Special tournaments: listing, aliasing, join/enter, prizes, history, server and client results',
     async run(ctx) {
       const { mod } = ctx;
@@ -717,7 +782,30 @@ export const SCENARIOS = [
         { Score: 99.9, UserId: USER_ID, FunticoUserId: PLATFORM_ID, UserIp: '10.0.0.1', GameManagedAward: 5, AdditionalData: 'x', GameEvents: ['a'] },
         { Score: -0.5, UserId: 4343, FunticoUserId: RIVAL_ID, UserIp: '10.0.0.2' },
       ]);
-      ctx.check(lastBody(ctx).scores[0].score === 99 && lastBody(ctx).scores[1].game_managed_award === null, 'snake_case scores');
+      ctx.check(lastBody(ctx).scores[0].score === 99 && lastBody(ctx).scores[0].game_managed_award === 5
+        && !('game_managed_award' in lastBody(ctx).scores[1]), 'snake_case scores, award only when given');
+      ctx.check(lastBody(ctx).scores.every(s => s.game_session_id_or_match_id === 'match-0002'), 'one match id for all');
+
+      // A player who left is reported with a null score; an answer with a result per score counts as success.
+      ctx.route('POST /Rooms/end-room-all-users', json({ results: [{ status: 200, body: { matchId: 'match-0002' } }, { status: 200, body: { matchId: 'match-0002' } }] }));
+      const settled = await ctx.call('FinishRoomSession_Server', ROOM_A.id, 'match-0002', [
+        { Score: 40, UserId: USER_ID, FunticoUserId: PLATFORM_ID, UserIp: '10.0.0.1' },
+        { Score: null, UserId: 4343, FunticoUserId: RIVAL_ID, UserIp: '10.0.0.2' },
+      ]);
+      ctx.check(settled === true && lastBody(ctx).scores[1].score === null, 'null score sent, true returned');
+
+      // One refused score: the call rejects with the server's text.
+      ctx.route('POST /Rooms/end-room-all-users', json({ results: [{ status: 200, body: { matchId: 'match-0002' } }, { status: 404, body: { message: 'Session not found' } }] }));
+      await ctx.call('FinishRoomSession_Server', ROOM_A.id, 'match-0002', [
+        { Score: 40, UserId: USER_ID, FunticoUserId: PLATFORM_ID, UserIp: '10.0.0.1' },
+        { Score: 7, UserId: 4343, FunticoUserId: RIVAL_ID, UserIp: '10.0.0.2' },
+      ]);
+      ctx.check(/Session not found/.test(ctx.lastError()?.message), 'a refused score rejects');
+
+      // An empty answer is a success too.
+      ctx.route('POST /Rooms/end-room-all-users', text('', 200));
+      ctx.check((await ctx.call('FinishRoomSession_Server', ROOM_A.id, 'match-0002', [])) === true, 'empty answer');
+      ctx.route('POST /Rooms/end-room-all-users', json(true));
       await ctx.call('CloseCurrentSession_Server');
 
       ctx.route('GET /Session/server-session-user-leave', text('boom', 500));

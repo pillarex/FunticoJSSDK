@@ -55,6 +55,7 @@ console.log(sdk === FunticoSDK.Instance); // true
    - [`GetLeaderboard`](#getleaderboard)
    - [`JoinRoom`](#joinroom)
    - [`StartRoomSP`](#startroomsp)
+   - [`JoinExternalMatch`](#joinexternalmatch)
    - [`EndRoomSP`](#endroomsp)
 4. [Special Tournaments Methods](#special-tournaments-methods)
    - [`TournamentsFilterEnum`](#tournamentsfilterenum)
@@ -1415,6 +1416,44 @@ activeSession = session; // same shape as JoinRoom's result: { EventId, SessionO
 
 **Important Notes:**
 - Prefer `JoinRoom`: it takes the seat, charges the fee or voucher, and calls this method with the right arguments. Calling `StartRoomSP` on top of a successful `JoinRoom` is never needed.
+- Requires an authenticated SDK (a player JWT), like the rest of the rooms flow.
+
+---
+
+### `JoinExternalMatch`
+
+Registers the player in a match of an external (PvP) room that your own matchmaking formed. Use it instead of `JoinRoom` for external rooms (the ones `GetRooms(2)` lists): `JoinRoom` takes no match id, so it cannot put two chosen players into the same match.
+
+**Signature:**
+```ts
+async JoinExternalMatch(eventId: string, matchId: string, password?: string, useVoucher = false): Promise<RoomSessionData>
+```
+
+**Parameters:**
+- `eventId` - The room's id (`RoomViewModel.Guid`).
+- `matchId` - The match's UUID. Your game server makes it once per match and hands the same value to every player of that match.
+- `password` - The room's password, for a room that has one. The SDK encrypts it.
+- `useVoucher` - Spend a free-entry voucher instead of the entry fee. Default: `false`.
+
+**Returns:** `Promise<RoomSessionData>` - `EventId` and `SessionOrMatchId`, which is the match id. Rejects with an `Error` when the player cannot be registered (for example: not enough balance, wrong password).
+
+**Flow for one external match:**
+1. Your matchmaking pairs the players, and your game server makes one `matchId` (for example `crypto.randomUUID()`).
+2. Every player of the match calls `JoinExternalMatch(eventId, matchId)`. The room's entry fee, if any, is charged here.
+3. When the match is over, your game server reports every player's final score under the same `matchId` with [`FinishRoomSession_Server`](#finishroomsession_server) (`null` for a player who left).
+4. Once every player of the match has a score, the prizes are paid by place automatically. `GetLeaderboard(eventId, matchId)` shows the result.
+
+**Usage:**
+```js
+// matchId comes from your game server, the same for every player of the match
+const session = await sdk.JoinExternalMatch(roomGuid, matchId);
+
+activeSession = session; // { EventId, SessionOrMatchId: matchId }
+```
+
+**Important Notes:**
+- Calling it again for the same match resolves to the same match, so a retry is safe.
+- If the player still has an unfinished game in this room under another id, it rejects: that game has to be finished first.
 - Requires an authenticated SDK (a player JWT), like the rest of the rooms flow.
 
 ---
@@ -3786,7 +3825,7 @@ await sdk.EndRoomSP(
 
 Methods meant for a trusted dedicated game server (for example a Node.js >= 20 process) that registers a multiplayer match, tracks players and submits everyone's results in one call. They authenticate as your **game**, not as a player: instead of a JWT the SDK sends `X-User-Key` (the public key) plus `X-Server-Key`, a proof derived from `privateGameKey`. The private key itself is never sent, but it must be present in the running process, so **never call these from a browser, Telegram Mini App or any other client build.** `Initialize` without a `userToken` is enough to use them.
 
-> **Not supported at the moment.** The Dedicated Server methods `CreateSession_Server`, `UserLeaveSession_Server`, `CloseCurrentSession_Server` and `FinishRoomSession_Server` are not supported at the moment; do not use them. `RecordEvent_Server` and `GetCurrentSessionEvents_Server` are purely local and work. For trusted server-side tournament results use `ResultTournament_Server`, which is supported.
+> **Supported:** `FinishRoomSession_Server`, which reports the final scores of an external match (see [`JoinExternalMatch`](#joinexternalmatch)), and the purely local `RecordEvent_Server` and `GetCurrentSessionEvents_Server`. **Not supported at the moment:** `CreateSession_Server`, `UserLeaveSession_Server` and `CloseCurrentSession_Server`; do not use them. You do not need them to report a match. For trusted server-side tournament results use `ResultTournament_Server`, which is supported.
 
 **ServerUserData Properties:** (type-only export: an interface in the `.d.ts`, not a runtime value)
 - `JoinKey` (`string`) - The player's join key for the match.
@@ -3877,7 +3916,7 @@ await sdk.CloseCurrentSession_Server();
 
 ### `FinishRoomSession_Server`
 
-Submits the results of every match participant in one payload from a dedicated server (`POST /Rooms/end-room-all-users?eventId=...`), then clears the local server-session tracking. **Not supported at the moment** — see the notice above.
+Reports the final scores of a finished match for all of its players in one call, from your trusted game server (`POST /Rooms/end-room-all-users?eventId=...`), then clears the local server-session tracking. It is the last step of an external match: pass the match id from [`JoinExternalMatch`](#joinexternalmatch) as `sessionId`. Once every player of the match has a score, the prizes are paid by place automatically.
 
 **Signature:**
 ```ts
@@ -3885,7 +3924,7 @@ async FinishRoomSession_Server(
   eventId: string,
   sessionId: string,
   participants: Array<{
-    Score: number;
+    Score: number | null;
     UserId: number;
     FunticoUserId: number;
     UserIp: string;
@@ -3898,25 +3937,25 @@ async FinishRoomSession_Server(
 
 **Parameters:**
 - `eventId` - Event/Room identifier the match was played in.
-- `sessionId` - The match session id. It is sent as each score's `game_session_id_or_match_id`.
+- `sessionId` - The match id (the `matchId` every player passed to `JoinExternalMatch`). It is sent as each score's `game_session_id_or_match_id`.
 - `participants` - One entry per player:
-  - `Score` (`number`) - Final score. Scores are integers, so the SDK truncates it with `Math.trunc`.
+  - `Score` (`number | null`) - Final score. Scores are integers, so the SDK truncates it with `Math.trunc`. `null` means the player left or was kicked before finishing.
   - `UserId` (`number`) - The SDK-side user id. **Not transmitted**: players are identified by `FunticoUserId`.
   - `FunticoUserId` (`number`) - The Funtico platform user id, sent as `user_id`. Hall of Fame results are recorded under this id.
   - `UserIp` (`string`) - The player's IP address, sent as `user_ip_end_session`.
   - `AdditionalData` / `GameEvents` (optional) - Kept for source compatibility only; the wire model has no field for them, so they are **not transmitted**.
-  - `GameManagedAward` (`number`, optional) - Game-managed award for the player. **Always pass a number** (`0` when there is none): omitting it sends `null`, which is rejected.
+  - `GameManagedAward` (`number`, optional) - Leave it out unless your game manages the award itself. It is sent only when it is a number.
 
-**Wire format:** the body is `{ scores: [...] }` with snake_case keys (`game_session_id_or_match_id`, `score`, `is_suspected_cheater`, `user_ip_end_session`, `user_id`, `game_managed_award`). The SDK builds it for you from the PascalCase `participants` above.
+**Wire format:** the body is `{ scores: [...] }` with snake_case keys (`game_session_id_or_match_id`, `score`, `is_suspected_cheater`, `user_ip_end_session`, `user_id`, and `game_managed_award` when given). The SDK builds it for you from the PascalCase `participants` above.
 
-**Returns:** `Promise<boolean>` - The parsed response body. Rejects with `Failed to finalize server match results` on a non-OK response; the local tracking is then kept.
+**Returns:** `Promise<boolean>` - `true` once every score is recorded. Rejects with `Failed to finalize server match results: ...` and the server's text when the call fails or any of the scores is refused (the text lists the result of each score); the local tracking is then kept.
 
 **Usage:**
 ```js
-// Trusted Node.js server code only. Not supported at the moment: see the notice above.
+// Trusted Node.js server code only: it needs the private game key
 await sdk.FinishRoomSession_Server(eventId, matchId, [
-  { Score: 1200, UserId: 17, FunticoUserId: 1001, UserIp: '203.0.113.10', GameManagedAward: 0 },
-  { Score: 950, UserId: 18, FunticoUserId: 1002, UserIp: '203.0.113.11', GameManagedAward: 0 }
+  { Score: 1200, UserId: 17, FunticoUserId: 1001, UserIp: '203.0.113.10' },
+  { Score: null, UserId: 18, FunticoUserId: 1002, UserIp: '203.0.113.11' } // left the match
 ]);
 ```
 

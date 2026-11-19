@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 9e3d8ee9a94f) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 7e62156ff980) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -1708,6 +1708,28 @@ export declare class FunticoSDK {
      */
     StartRoomSP(eventId: string, sessionOrMatchId: string, isLobby?: boolean): Promise<RoomSessionData>;
     /**
+     * Registers the player in a match of an external (PvP) room that your own matchmaking formed.
+     *
+     * Every player of the match calls it with the same matchId: a UUID your game server makes once
+     * per match. The room's entry fee, if any, is charged here. When the match is over, your game
+     * server reports every player's final score under the same matchId with FinishRoomSession_Server;
+     * prizes are paid by place once every player of the match has a score.
+     *
+     * JoinRoom is for regular rooms: it takes no match id, so it cannot put two chosen players into
+     * the same match.
+     *
+     * Calling it again for the same match resolves to the same match, so a retry is safe. If the
+     * player still has an unfinished game in this room under another id, this rejects: that game has
+     * to be finished first.
+     *
+     * @param eventId    The room's id (an external room: GetRooms(2) lists them).
+     * @param matchId    The match's UUID, the same for all of its players.
+     * @param password   The room's password, for a room that has one.
+     * @param useVoucher Spend a free-entry voucher instead of the entry fee.
+     * @returns The room session to report under; SessionOrMatchId is the match id.
+     */
+    JoinExternalMatch(eventId: string, matchId: string, password?: string, useVoucher?: boolean): Promise<RoomSessionData>;
+    /**
      * Ends a room session and sends the player's encrypted score to the game API (Client-side).
      *
      * The score is encrypted and signed with privateGameKey. If this fails with HTTP 500 "Padding is
@@ -2070,19 +2092,30 @@ export declare class FunticoSDK {
      */
     CloseCurrentSession_Server(): Promise<boolean>;
     /**
-     * Submits multiplayer results for all match participants in one payload from Dedicated Server.
+     * Reports the final scores of a finished match for all of its players in one call, from your
+     * trusted game server. It is the last step of an external match (see JoinExternalMatch): pass the
+     * match id as sessionId. The prizes are paid by place once every player of the match has a score.
      *
-     * The request body is a root `scores` array with one entry per participant, each of which
-     * carries its own session id. Every key is snake_case.
+     * It authenticates as your game, so the private game key must be present: call it only from
+     * server code, never from a browser build.
+     *
+     * The request body is a root `scores` array with one entry per participant, all under the same
+     * match id. Every key is snake_case.
      *
      * Note `user_id` is the FUNTICO user id (FunticoUserId), not UserId; results (including Hall of
      * Fame) are recorded against it.
      *
+     * A null Score means the player left or was kicked before finishing. GameManagedAward is sent
+     * only when it is a number.
+     *
      * AdditionalData and GameEvents are not transmitted; they stay on the parameter for source
      * compatibility.
+     *
+     * @returns true once every score is recorded. Rejects with the server's text when the call fails
+     *          or any of the scores is refused; the local server-session tracking is then kept.
      */
     FinishRoomSession_Server(eventId: string, sessionId: string, participants: Array<{
-        Score: number;
+        Score: number | null;
         UserId: number;
         FunticoUserId: number;
         UserIp: string;
