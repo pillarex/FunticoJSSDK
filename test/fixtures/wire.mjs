@@ -602,6 +602,7 @@ export function defaultRoutes() {
     'GET /User/get-full-data': json(USER),
     'GET /User/get-balance': json(BALANCE),
     'GET /User/vouchers': json(VOUCHERS),
+    'POST /User/complete-practice': text('"Success"'),
 
     'GET /Rooms/tiers': json(TIERS),
     'GET /Rooms/get-rooms': req => {

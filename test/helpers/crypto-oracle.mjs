@@ -36,6 +36,11 @@ export function payloadHmacKey(secretKey) {
   return secretKey.substring(8);
 }
 
+/** Key for practice results: the player's UserId in decimal, left-padded with zeros to 8, first 8 characters. */
+export function practiceAesKey(userId, secretKey) {
+  return String(userId).padStart(8, '0').substring(0, 8) + secretKey.substring(0, 8);
+}
+
 /** Key for saved-session data. */
 export function sessionKey(userId, secretKey) {
   return userId.toString(16).padStart(8, '0') + secretKey.slice(-8);

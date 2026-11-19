@@ -406,6 +406,69 @@ export const SCENARIOS = [
 
   // -------------------------------------------------------------------------------------------
   {
+    name: 'Practice: signed result, recorded events and counts, run id across a failed submit, overrides, validation',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('CompletePractice', 100);
+      ctx.check(/not authenticated/.test(ctx.lastError()?.message), 'needs sign-in');
+      ctx.expectRequests(0, 'nothing sent before sign-in');
+
+      // Signed in without the profile preload: the user id is loaded first.
+      await ctx.call('Initialize', config(mod));
+      await ctx.call('Authentication', PLATFORM_TOKEN);
+      const n0 = ctx.requests.length;
+      ctx.check((await ctx.call('CompletePractice', 0)) === true, 'delivered');
+      ctx.check(ctx.requests.length === n0 + 2 && ctx.requests[n0].url === `${API}/User/get-full-data`, 'user data loaded before the result');
+      ctx.check(lastRequest(ctx).method === 'POST' && lastRequest(ctx).url === `${API}/User/complete-practice`, 'practice url');
+      ctx.check(Object.keys(lastBody(ctx)).join() === 'Data,Hash' && /^[0-9a-f]{64}$/.test(lastBody(ctx).Hash), 'practice envelope');
+
+      await ctx.call('RecordEvent_Client', '{"t":"wave","n":1}');
+      await ctx.call('RecordCollected_Client', 'chest_1', 2);
+      const n1 = ctx.requests.length;
+      await ctx.call('CompletePractice', 1234.9);
+      ctx.expectRequests(n1 + 1, 'cached user data: one request');
+      ctx.check((await ctx.call('GetCurrentSessionEvents_Client')).length === 0, 'events cleared after a delivered result');
+      ctx.check(Object.keys(await ctx.call('GetCurrentSessionCollected_Client')).length === 0, 'counts cleared after a delivered result');
+
+      // A refused or lost result keeps the run (same id), its events and its counts for the retry.
+      await ctx.call('RecordEvent_Client', 'kept');
+      await ctx.call('RecordCollected_Client', 'chest_2');
+      ctx.route('POST /User/complete-practice', text('Invalid hash', 400));
+      await ctx.call('CompletePractice', 50);
+      ctx.check(/Invalid hash/.test(ctx.lastError()?.message), 'server text in error');
+      ctx.route('POST /User/complete-practice', networkError());
+      await ctx.call('CompletePractice', 50);
+      ctx.check(ctx.lastError()?.message === 'mock network failure', 'network error surfaces');
+      ctx.check((await ctx.call('GetCurrentSessionEvents_Client')).length === 1, 'events kept after a failure');
+      ctx.check((await ctx.call('GetCurrentSessionCollected_Client')).chest_2 === 1, 'counts kept after a failure');
+      ctx.route('POST /User/complete-practice', text('"Success"'));
+      await ctx.call('CompletePractice', 50);
+      const sent = ctx.requests.filter(r => r.url.endsWith('/User/complete-practice')).map(r => JSON.parse(r.body).Data);
+      ctx.check(sent.slice(-3).every(data => data === sent[sent.length - 1]), 'the retries resend the same run');
+
+      // Overrides are sent instead of the recorded data; the recorded data is cleared all the same.
+      await ctx.call('RecordEvent_Client', 'recorded');
+      await ctx.call('RecordCollected_Client', 'chest_1');
+      await ctx.call('CompletePractice', -7.5, { collected: { chest_3: 4 }, gameEvents: ['own-1', 'own-2'] });
+      await ctx.call('GetCurrentSessionEvents_Client');
+      await ctx.call('GetCurrentSessionCollected_Client');
+      await ctx.call('RecordCollected_Client', 'chest_1');
+      await ctx.call('CompletePractice', 3, { gameEvents: ['only-events'] });
+      await ctx.call('CompletePractice', 1, { collected: {}, gameEvents: [] });
+
+      // Scores that do not fit a 32-bit integer throw before any request.
+      const n2 = ctx.requests.length;
+      for (const score of [NaN, Infinity, -Infinity, 2 ** 31, -(2 ** 31) - 1, '100']) {
+        await ctx.call('CompletePractice', score);
+      }
+      ctx.expectRequests(n2, 'invalid scores make no request');
+      await ctx.call('CompletePractice', 2 ** 31 - 0.5);
+      await ctx.call('CompletePractice', -(2 ** 31));
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
     name: 'Hall of Fame: periods, game-mode mapping, distribution, invalid arguments',
     async run(ctx) {
       const { mod } = ctx;
@@ -818,6 +881,9 @@ export const SCENARIOS = [
       ctx.check(report.PlayerRatingAfter === 1016 && report.Run.Wins === 1, 'report mapped');
       await ctx.call('ReportGhostResult', GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Draw);
       ctx.check(lastBody(ctx).MatchId === GHOST_MATCH_ID, 'match id lowercased');
+      await ctx.call('ReportGhostResult', GHOST_MATCH_ID, mod.GhostOutcome.Win, 'fight-hash-01', '{"v":1,"log":["r1","r2"]}');
+      ctx.check(Object.keys(lastBody(ctx)).join() === 'MatchId,EncryptedData,Hash', 'match data travels only inside the signed payload');
+      await ctx.call('ReportGhostResult', GHOST_MATCH_ID, mod.GhostOutcome.Loss, null, '');
       const before = ctx.requests.length;
       await ctx.call('ReportGhostResult', GHOST_MATCH_ID, 'Victory');
       ctx.check(ctx.lastError()?.code === mod.GhostErrorCode.InvalidOutcome, 'outcome validated');
@@ -845,16 +911,19 @@ export const SCENARIOS = [
         ['POST /Ghost/run/start', 'StartGhostRun', ['duel'], json({ Error: 'RunNotSupported', Message: 'No runs' }, 400)],
         ['POST /Ghost/run/abandon', 'AbandonGhostRun', ['arena'], json({ Error: 'RunNotActive', Message: 'Nothing to abandon' }, 400)],
         ['POST /Ghost/report', 'ReportGhostResult', [GHOST_MATCH_ID, mod.GhostOutcome.Loss], json({ Error: 'MatchExpired', Message: 'Expired' }, 400)],
+        ['POST /Ghost/report', 'ReportGhostResult', [GHOST_MATCH_ID, mod.GhostOutcome.Win, null, 'x'.repeat(40000)],
+          json({ Error: 'DataTooLarge', Message: 'Too large' }, 400), 'DataTooLarge'],
         ['POST /Ghost/upload', 'UploadGhostSnapshot', ['arena', {}, 'x'], json({ Error: 'InvalidSnapshot', Message: 'Not JSON' }, 400)],
         ['GET /Ghost/pools', 'GetGhostPools', [], json({ Error: 'BrandNewCode', Message: 'Future' }, 400)],
         ['GET /Ghost/report-summary', 'GetGhostReportSummary', ['nope'], json({ Error: 'PoolNotFound', Message: 'No pool' }, 400)],
         ['GET /Ghost/history', 'GetGhostHistory', ['arena'], text('Bad Gateway', 502)],
         ['GET /Ghost/run', 'GetGhostRun', ['arena'], text('', 401)],
       ];
-      for (const [route, method, args, failure] of failures) {
+      for (const [route, method, args, failure, code] of failures) {
         ctx.route(route, failure);
         await ctx.call(method, ...args);
         ctx.check(ctx.lastError()?.isGhostError === true, `${method}: GhostError thrown`);
+        if (code) ctx.check(ctx.lastError()?.code === mod.GhostErrorCode[code], `${method}: ${code} code`);
       }
       ctx.check(ctx.lastError()?.code === mod.GhostErrorCode.Unknown, 'no body -> Unknown');
 

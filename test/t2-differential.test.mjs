@@ -83,6 +83,9 @@ const MUTANTS = [
   { what: 'session key derivation', find: 'substring(privateKey.length - 8)', replace: 'substring(privateKey.length - 9)' },
   { what: 'dead campaign attempt cleanup', find: 'attemptIsDead &&', replace: 'false &&' },
   { what: 'auth header name', find: '"Authorization": `Bearer ${this.jwtToken}`', replace: '"authorization": `Bearer ${this.jwtToken}`' },
+  { what: 'practice key from the decimal user id', find: "String(user.UserId).padStart(8, '0')", replace: "user.UserId.toString(16).padStart(8, '0')" },
+  { what: 'practice run id kept across a failed submit', find: 'if (this.practiceRunId === null) {', replace: 'if (true) {' },
+  { what: 'empty ghost match data left out', find: 'matchData.length > 0 ? { MatchData: matchData }', replace: 'matchData.length >= 0 ? { MatchData: matchData }' },
 ];
 
 test('T2 mutation check: each behavioural mutant of the ESM dist is detected by some scenario', async () => {

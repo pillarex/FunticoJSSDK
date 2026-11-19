@@ -4,7 +4,7 @@ This guide covers setting up and using the Funtico Games SDK in **plain JavaScri
 
 The Funtico JS SDK is **generated from the Funtico Phaser SDK** ([pillarex/funtico-sdk-phaser](https://github.com/pillarex/funtico-sdk-phaser), checked out here as the `upstream/phaser` submodule). The build removes the Phaser dependency and keeps everything else, so the API is the same method for method: same names, parameters, return models, wire handling and encryption. The only addition is `FunticoClient`, a small event-emitting wrapper that replaces the Phaser plugin.
 
-The SDK covers rooms and tournament management, special tournaments, the Hall of Fame leaderboard, Campaign Mode, and client-side session reconnection.
+The SDK covers rooms and tournament management, special tournaments, practice results, the Hall of Fame leaderboard, Campaign Mode, and client-side session reconnection.
 
 ## Documentation
 
@@ -424,6 +424,26 @@ distribution.items.forEach(item => {
 ```
 
 > **Note:** Distribution prizes use the shared **`Prize`** union, the same one that `GetPrizePoolDistribution` returns. Check the lowercase `type` field to tell prize kinds apart. The value fields are PascalCase (`Value`, `Amount`, `ItemId`, `PrizeId`, `Currency`), and the nested `Item` is lowercase (`id`/`image`/`name`). Item artwork is a plain URL at `prize.Item.image`. Load it like any other image (for example `img.src = prize.Item.image`) or with your engine's texture loader.
+
+### Submitting a Practice Result
+
+Practice runs need no room and no entry fee. Submit the score when the run ends; it is ranked under `HallOfFameGameModeFilter.Practice`.
+
+```js
+// Optional during the run: both are sent with the result
+funtico.sdk.RecordEvent_Client(JSON.stringify({ type: 'wave_cleared', wave: 3 }));
+funtico.sdk.RecordCollected_Client('chest_1');
+
+try {
+  // The SDK encrypts and signs the payload for you
+  await funtico.sdk.CompletePractice(score);
+} catch (err) {
+  // The run, its events and its counts are kept: calling CompletePractice again resends the same run
+  console.error('Failed to save the practice result:', err);
+}
+```
+
+> **Note:** A delivered result clears the recorded events and counts. Pass `{ collected, gameEvents }` as the second argument to send your own instead. See [USAGE.md](./USAGE.md#completepractice) for the details.
 
 ---
 

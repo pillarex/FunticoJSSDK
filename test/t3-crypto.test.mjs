@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { runScenario } from './helpers/harness.mjs';
 import { importEsm, requireUmd } from './helpers/paths.mjs';
 import {
-  serverEncrypt, serverDecrypt, serverHmac, serverKey, payloadAesKey, payloadHmacKey, sessionKey,
+  serverEncrypt, serverDecrypt, serverHmac, serverKey, payloadAesKey, payloadHmacKey, sessionKey, practiceAesKey,
 } from './helpers/crypto-oracle.mjs';
 import { defaultRoutes, config, PUB, PRIV, PLATFORM_TOKEN, USER_ID, ROOM_A, TOURNAMENT_ID, GHOST_MATCH_ID, GOAL_ATTEMPT_ID, GOAL_ID } from './fixtures/wire.mjs';
 
@@ -79,6 +79,10 @@ for (const { name, mod } of builds) {
       await ctx.sdk.CompleteCampaignLevel({ score: 1234.5, perfect: true, missed: false });
       ctx.state.attempt = attempt;
       await ctx.sdk.ReportGhostResult(GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Draw, 'fight-hash-01');
+      await ctx.sdk.ReportGhostResult(GHOST_MATCH_ID, mod.GhostOutcome.Win, null, '{"log":["r1"]}');
+      ctx.sdk.RecordEvent_Client('wave:1');
+      ctx.sdk.RecordCollected_Client('chest_1');
+      await ctx.sdk.CompletePractice(777.7);
       await ctx.sdk.CompleteGoalAttempt({ AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID }, 1500000,
         { clientDurationSeconds: 58.5, metrics: { hits: 42 }, fightHash: 'fh-1', strikeData: '{"build":["gauss"],"seed":7}' });
       await ctx.sdk.CreateSession_Client('{"level":1,"hp":50}', mod.GameTypeEnum.Rooms, eventId, sessionId);
@@ -114,6 +118,18 @@ for (const { name, mod } of builds) {
     assert.deepEqual(JSON.parse(serverDecrypt(ghost.EncryptedData, payloadAesKey(GHOST_MATCH_ID, PRIV))),
       { MatchId: GHOST_MATCH_ID, Outcome: 'Draw', FightHash: 'fight-hash-01' });
     assert.equal(ghost.Hash, serverHmac(ghost.EncryptedData, payloadHmacKey(PRIV)));
+    const withData = JSON.parse(requests.filter(r => new URL(r.url).pathname === '/Ghost/report')[1].body);
+    assert.deepEqual(JSON.parse(serverDecrypt(withData.EncryptedData, payloadAesKey(GHOST_MATCH_ID, PRIV))),
+      { MatchId: GHOST_MATCH_ID, Outcome: 'Win', FightHash: null, MatchData: '{"log":["r1"]}' });
+    assert.equal(withData.Hash, serverHmac(withData.EncryptedData, payloadHmacKey(PRIV)));
+
+    // CompletePractice: payload keyed on the player's UserId (decimal, zero-padded to 8).
+    const practice = JSON.parse(find('/User/complete-practice').body);
+    const practicePayload = JSON.parse(serverDecrypt(practice.Data, practiceAesKey(USER_ID, PRIV)));
+    assert.deepEqual(practicePayload,
+      { Score: 777, RunId: practicePayload.RunId, Collected: { chest_1: 1 }, GameEvents: ['wave:1'] });
+    assert.match(practicePayload.RunId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(practice.Hash, serverHmac(practice.Data, payloadHmacKey(PRIV)));
 
     // CompleteGoalAttempt: payload keyed on the (lowercased) attempt id, which also travels in the clear.
     const goal = JSON.parse(find('/CommunityGoal/attempt/complete').body);

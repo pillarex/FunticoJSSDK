@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 23a06a0d9bd6) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 9e3d8ee9a94f) + src/FunticoClient.ts (sha256 8974316eadd4).
  * Regenerate with: npm run build
  */
 /**
@@ -597,6 +597,16 @@ export interface ServerUserData {
     UserStatus: UserGameStatus;
 }
 /**
+ * Optional overrides for CompletePractice. Each field you leave out is taken from what the run
+ * recorded in the SDK.
+ */
+export interface CompletePracticeOptions {
+    /** Send these counts instead of what RecordCollected_Client recorded. */
+    collected?: Record<string, number>;
+    /** Send these events instead of what RecordEvent_Client recorded. */
+    gameEvents?: string[];
+}
+/**
  * Hall of Fame leaderboard entry.
  *
  * Fields are camelCase, unlike the rest of this SDK: that is how the /HallOfFame endpoints send them.
@@ -918,6 +928,8 @@ export declare enum GhostErrorCode {
     MatchExpired = "MatchExpired",
     InvalidSignature = "InvalidSignature",
     InvalidOutcome = "InvalidOutcome",
+    /** The report's matchData is over 32 KB in UTF-8. Nothing was recorded and the match stays open: report again without it. */
+    DataTooLarge = "DataTooLarge",
     /** The response carried no recognisable code. */
     Unknown = "Unknown"
 }
@@ -1474,6 +1486,7 @@ export declare class FunticoSDK {
     private currentClientSessionId;
     private currentClientSessionEvents;
     private currentClientSessionCollected;
+    private practiceRunId;
     private activeCampaignAttempt;
     private activeServerSessionId;
     private activeServerSessionEvents;
@@ -1588,7 +1601,7 @@ export declare class FunticoSDK {
     /** Maps a /User/vouchers entry (snake_case) onto the public PascalCase VoucherData model. */
     private mapVoucher;
     /**
-     * Fresh idempotency key per join attempt.
+     * Fresh random v4 UUID: the idempotency key of a join attempt, the id of a practice run.
      *
      * crypto.randomUUID() is only exposed in secure contexts, so it is absent (or throws) on plain
      * HTTP - which games served over http:// do hit. Fall back to getRandomValues, and only then to
@@ -1740,6 +1753,27 @@ export declare class FunticoSDK {
      */
     ResultTournament_Client(tournamentId: string, saveScoreId: string, score: number, isSuccess: boolean, customData?: string): Promise<boolean>;
     /**
+     * Submits the result of a practice run, encrypted and signed with privateGameKey. Call it once,
+     * when the run is over. The result is ranked in the Hall of Fame as a Practice result.
+     *
+     * What the run recorded goes with the result: the counts from RecordCollected_Client (keys your
+     * game has opened for practice can pay rewards) and the events from RecordEvent_Client. Pass
+     * options.collected or options.gameEvents to send your own instead. Empty counts and an empty
+     * event list are left out of the payload.
+     *
+     * Each practice run carries an id the SDK makes for it. A failed submit (a rejection or a network
+     * error) keeps that id, the recorded counts and the events, so calling again resends the same run
+     * and its rewards are not paid twice. A delivered result clears the recorded counts and events
+     * (also when you passed your own) and the next run gets a new id.
+     *
+     * Needs the player's UserId: the cached user data is used, and loaded first when none is cached.
+     *
+     * @param score The run's score. Fractional values are truncated toward zero, and the result must
+     *              fit a 32-bit integer; otherwise this throws before anything is sent.
+     * @returns true once the result is recorded. Rejects with an Error when the server refuses it.
+     */
+    CompletePractice(score: number, options?: CompletePracticeOptions): Promise<boolean>;
+    /**
      * Fetches a page of the Hall of Fame ranking.
      * @param mode     Global (all-time) or Monthly (current calendar month, UTC).
      * @param page     1-based page index.
@@ -1875,7 +1909,8 @@ export declare class FunticoSDK {
     GetCurrentSessionEvents_Client(): string[];
     /**
      * Counts an item the player collected during the current run, such as a chest. The counts are
-     * sent with the result by EndRoomSP and ResultTournament_Client, also when the run was lost.
+     * sent with the result by EndRoomSP, ResultTournament_Client and CompletePractice, also when the
+     * run was lost.
      *
      * @param key The reward key agreed for your game, for example "chest_1".
      * @param count How many to add. Use it to re-record what a resumed run had collected.
@@ -1946,8 +1981,16 @@ export declare class FunticoSDK {
     /**
      * Reports the fight of a match, once. A repeated report returns the first result. The result
      * is encrypted and signed like a campaign completion.
+     *
+     * @param fightHash Optional: your hash of the fight (up to 128 characters), kept with the match
+     *                  so the fight can be checked later.
+     * @param matchData Optional: your evidence for a later check of this fight, in your own format
+     *                  (for example your run's log up to and including this fight). It is signed
+     *                  together with the report and kept with the match; left out when empty. At most
+     *                  32 KB in UTF-8: a larger one rejects with `DataTooLarge`, nothing is recorded
+     *                  and the match stays open, so report again without it.
      */
-    ReportGhostResult(matchId: string, outcome: GhostOutcome, fightHash?: string | null): Promise<GhostReportResult>;
+    ReportGhostResult(matchId: string, outcome: GhostOutcome, fightHash?: string | null, matchData?: string | null): Promise<GhostReportResult>;
     /** What the player's ghosts did since the previous call; the call resets the "New" counters. */
     GetGhostReportSummary(pool: string): Promise<GhostReportSummary>;
     /** The player's fights and the fights against the player's ghosts, newest first. */
