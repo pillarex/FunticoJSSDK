@@ -3585,6 +3585,7 @@ What a contribution means is entirely your game's: damage, coins, metres. The se
 
 **Rules worth knowing:**
 - **Attempts per day** are counted across the whole chain and reset at 00:00 UTC (`AttemptsLeftToday`, `ResetsAt`). An attempt is spent when it starts; an attempt that is never completed expires after `AttemptTtlSeconds` with no contribution.
+- **Paid attempts.** A chain may also sell attempts for PLAYR (`Chain.PaidAttempts`: the price and a daily limit of its own). `StartGoalAttempt(goalId, { paid: true })` charges the price once and returns the attempt when it is paid. A paid attempt counts in the goal and the leaderboard exactly like a free one. It is paid back only if it never reached the player; once returned there is no refund, also when it expires unfinished.
 - **One live attempt.** Calling `StartGoalAttempt` again while an attempt is live returns that same attempt (`Resumed: true`, same `Seed`, same `MilestonesAtStart`, nothing spent). This is how a reloaded game resumes. The live attempt may belong to an earlier goal: always play against the `Goal` the start returned, in the phase of `Attempt.MilestonesAtStart` (the goal may have moved on since the start).
 - **Late attempts count.** An attempt started before its goal closed still counts in full on that goal, even if the goal closed while it was being played. The result then says `GoalClosed: true` and names `NextGoalId`.
 - **Plausibility limits.** The chain may cap a single contribution; a larger one counts up to the cap (`Capped: true`). Completing faster than `MinAttemptSeconds` (server clock) spends the attempt with nothing counted.
@@ -3593,7 +3594,7 @@ What a contribution means is entirely your game's: damage, coins, metres. The se
 
 > **Casing note:** Community Goal responses are **PascalCase** (`Goal`, `CurrentValue`, `PayloadJson`).
 
-**Failure model.** Community Goal methods reject with a `CommunityGoalError` carrying a machine-readable `Code`, plus `NextGoalId` (for `GoalClosed`) and `ResetsAt` (for `NoAttemptsLeft`).
+**Failure model.** Community Goal methods reject with a `CommunityGoalError` carrying a machine-readable `Code`, plus `NextGoalId` (for `GoalClosed`) and `ResetsAt` (for `NoAttemptsLeft` and `NoPaidAttemptsLeft`).
 
 ---
 
@@ -3608,7 +3609,7 @@ GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>
 ```
 
 **CommunityGoalState Properties:**
-- `Chain` (`CommunityGoalChain`) - `Key`, `Name`, `Scoring`, `FreeAttemptsPerDay` (`0` = no limit), `MinAttemptSeconds`, `AttemptTtlSeconds`, `Milestones` (progress fractions such as `0.25`, `0.5`, `0.75`).
+- `Chain` (`CommunityGoalChain`) - `Key`, `Name`, `Scoring`, `FreeAttemptsPerDay` (`0` = no limit), `MinAttemptSeconds`, `AttemptTtlSeconds`, `Milestones` (progress fractions such as `0.25`, `0.5`, `0.75`), `PaidAttempts` (`CommunityGoalPaidAttempts | null`: `Product`, `Tier`, `DisplayPrice` (the price in PLAYR as a decimal string, to show before buying; `null` when it is not on sale) and `PerDay` (`0` = no limit); `null` when the chain sells no paid attempts).
 - `Goal` (`CommunityGoal | null`) - The open goal (by chain key) or the requested one (by id). `null` only when the chain has never had a goal.
 - `AwaitingNext` (`boolean`) - No goal is open right now: the last one closed and the next one is not open yet. `Goal` then shows the last one.
 - `Me` (`CommunityGoalMe | null`) - `null` before sign-in.
@@ -3618,7 +3619,7 @@ GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>
 
 **CommunityGoalBracket Properties:** `Name` (the key `Me.Bracket` names), `Label` (what to show, e.g. `'#1'` or `'TOP 10%'`; may be `null`), exactly one of `MaxPlace` (final places 1..MaxPlace), `MaxPercentile` (final place × 100 / contributors at most this) or `AnyContribution` (everyone who contributed), and `Display` (what the bracket pays, as configured for display: `Name`, `Code` (your game's own key for the entry, such as an item key or a key for a random pool; recognise entries by it, not by `Name`), `ImageUrl`, `Amount`). The actual items are drawn when the goal settles.
 
-**CommunityGoalMe Properties:** `IsContributor`, `Score`, `Place` (`null` until the player contributes), `Contributed`, `Best` (the player's best strike on this goal), `Attempts` (completed on this goal), `AttemptsUsedToday`, `AttemptsLeftToday` (`null` = no limit), `ResetsAt`, `OpenAttempt` (the player's live attempt, if any), and for settled goals `FinalPlace`, `Bracket` (the reward bracket of that place), `RewardStatus` and `Rewards`.
+**CommunityGoalMe Properties:** `IsContributor`, `Score`, `Place` (`null` until the player contributes), `Contributed`, `Best` (the player's best strike on this goal), `Attempts` (completed on this goal), `AttemptsUsedToday`, `AttemptsLeftToday` (free attempts; `null` = no limit), `PaidAttemptsUsedToday`, `PaidAttemptsLeftToday` (`null` when the chain sells none or has no limit on them), `ResetsAt`, `OpenAttempt` (the player's live attempt, if any; a paid one shows only once it is paid), and for settled goals `FinalPlace`, `Bracket` (the reward bracket of that place), `RewardStatus` and `Rewards`.
 
 **RewardStatus Values** (`null` before settlement or for a non-contributor):
 - `None` - No bracket for this place (or nothing payable).
@@ -3681,7 +3682,7 @@ watch.stop();
 
 ### `StartGoalAttempt`
 
-Starts an attempt on an open goal, spending one of today's attempts, or returns the player's live attempt.
+Starts an attempt on an open goal, spending one of today's free attempts or buying a paid one, or returns the player's live attempt.
 
 **Signature:**
 ```typescript
@@ -3689,14 +3690,34 @@ StartGoalAttempt(goalId: string, options?: StartGoalAttemptOptions): Promise<Goa
 ```
 
 **Returns:** `GoalAttemptStart`:
-- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart`, `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in) and `StartData` (what you passed as `options.startData`, unchanged; `null` if none). All of them are the same on every resume.
+- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart`, `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in) `StartData` (what you passed as `options.startData`, unchanged; `null` if none) and `Paid` (`true` for a paid attempt). All of them are the same on every resume.
 - `Resumed` (`boolean`) - `true` when the live attempt was returned again (nothing spent).
 - `Goal` (`CommunityGoal`) - The goal of the attempt, with its payload and its current state. On a resumed attempt the goal may have passed more milestones since the start; play in the phase of `Attempt.MilestonesAtStart`.
-- `AttemptsLeftToday`, `ResetsAt`.
+- `AttemptsLeftToday`, `PaidAttemptsLeftToday`, `ResetsAt`.
+- `Entry` (`GoalAttemptEntry | null`) - The payment of a paid attempt: `Status` (`'Charged'` whenever the attempt is returned), `Amount` and `BalanceAfter` (PLAYR as decimal strings). `null` for a free attempt.
 
 `options.startData` (optional, up to 8 KB in UTF-8) is your own data for the attempt, for example the build it starts with. It is kept with a new attempt and comes back in `Attempt.StartData` on every resume and in `Me.OpenAttempt`, so an unfinished strike can be continued with the same build on another device. When the live attempt is returned again, a new `startData` is ignored: the first one stays.
 
-Rejects with `GoalClosed` (load `NextGoalId`: the next goal has its own data), `NoAttemptsLeft` (see `ResetsAt`) or `DataTooLarge` (nothing spent). Requires a signed-in player.
+`options.paid` buys one of the chain's paid attempts instead of spending a free one; show its price from `Chain.PaidAttempts.DisplayPrice`. The price is charged once per attempt: calling again (after a reload, or after `PaymentPending`) never charges twice. The attempt is returned only when it is paid. It is paid back only if it never reached the player: the payment was refused, or it was confirmed only after the attempt had run out. Once returned there is no refund, also when it expires unfinished. While a live attempt exists, that one is returned whatever `paid` says, so check `Attempt.Paid`.
+
+Rejects with `GoalClosed` (load `NextGoalId`: the next goal has its own data), `NoAttemptsLeft` (see `ResetsAt`) or `DataTooLarge` (nothing spent). A paid attempt can also reject with `NoPaidAttemptsLeft` (see `ResetsAt`), `InsufficientFunds`, `KycRequired` or `EntryUnavailable` (nothing charged in any of these), `PaymentPending` (the payment is not confirmed yet: call again later) or `ReloginRequired`. Requires a signed-in player.
+
+```javascript
+// Out of free attempts: offer a paid one while the chain sells them and today's limit allows.
+const paid = state.Chain.PaidAttempts;
+if (state.Me && state.Me.AttemptsLeftToday === 0 && paid && paid.DisplayPrice && state.Me.PaidAttemptsLeftToday !== 0) {
+  showBuyButton(`${paid.DisplayPrice} PLAYR`, async () => {
+    try {
+      const { Attempt, Goal } = await sdk.StartGoalAttempt(state.Goal.GoalId, { paid: true });
+      playStrike(Attempt, Goal);
+    } catch (e) {
+      if (e instanceof CommunityGoalError && e.Code === CommunityGoalErrorCode.InsufficientFunds) showTopUp();
+      else if (e instanceof CommunityGoalError && e.Code === CommunityGoalErrorCode.PaymentPending) retryShortly();
+      else throw e;
+    }
+  });
+}
+```
 
 ---
 
@@ -3715,7 +3736,7 @@ CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribu
 - `options.clientDurationSeconds`, `options.metrics` (up to 16 numbers), `options.fightHash` - Optional, for analytics and later checks.
 - `options.strikeData` - Optional, up to 16 KB in UTF-8: your own data of the strike, for example the build and what a replay needs. It travels signed with the result. The one of each player's best strike is kept and can be read back from the leaderboard with `GetCommunityGoalStrike`. Too long: `DataTooLarge`, nothing counted and the attempt stays open, so send it again without it.
 
-**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Best` (the player's best strike on this goal, this one included), `IsNewBest` (this contribution beat every earlier one of the player on this goal; the same on a replay), `Place`, `AttemptsLeftToday`, `ResetsAt` and `Replayed`.
+**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Best` (the player's best strike on this goal, this one included), `IsNewBest` (this contribution beat every earlier one of the player on this goal; the same on a replay), `Place`, `AttemptsLeftToday`, `PaidAttemptsLeftToday`, `ResetsAt` and `Replayed`.
 
 **Usage:**
 ```javascript
@@ -3798,6 +3819,12 @@ The error every Community Goal method rejects with. Besides `Code` it carries `N
 - `InvalidContribution` - The contribution is not a whole number of 0 or more.
 - `DataTooLarge` - `startData` (8 KB) or `strikeData` (16 KB) is too long in UTF-8. Nothing was spent or counted; the attempt stays open.
 - `StrikeNotFound` - No such best strike on this goal any more. Reload the leaderboard.
+- `NoPaidAttemptsLeft` - Today's paid attempts are used. They reset at `ResetsAt`. Nothing was charged.
+- `InsufficientFunds` - Paid attempt: the player's PLAYR balance is below the price. Nothing was charged.
+- `KycRequired` - Paid attempt: the player must complete identity verification first. Nothing was charged.
+- `EntryUnavailable` - Paid attempt: it cannot be bought right now (the chain sells none, it is not on sale, or the player is suspended). Nothing was charged.
+- `PaymentPending` - Paid attempt: the payment is not confirmed yet. Call `StartGoalAttempt` again: it never charges twice.
+- `ReloginRequired` - The player's Funtico session belongs to another game or has expired. Signing in to this game again fixes it.
 - `Unknown` - The response carried no recognisable code, or your `payloadSigner` could not sign the result, so nothing was sent.
 
 ---

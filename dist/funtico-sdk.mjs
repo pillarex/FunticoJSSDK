@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 db28992bfae0) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 72ea9a479677) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -346,7 +346,8 @@ export var GhostOutcome;
 })(GhostOutcome || (GhostOutcome = {}));
 /**
  * Machine-readable reasons a Community Goal method can fail. Branch on these, never on message text.
- * `GoalClosed` carries NextGoalId (load that goal: it has its own data); `NoAttemptsLeft` carries ResetsAt.
+ * `GoalClosed` carries NextGoalId (load that goal: it has its own data); `NoAttemptsLeft` and
+ * `NoPaidAttemptsLeft` carry ResetsAt.
  */
 export var CommunityGoalErrorCode;
 (function (CommunityGoalErrorCode) {
@@ -363,6 +364,21 @@ export var CommunityGoalErrorCode;
     CommunityGoalErrorCode["DataTooLarge"] = "DataTooLarge";
     /** No such best strike on this goal any more (the player has struck harder since, or was removed). */
     CommunityGoalErrorCode["StrikeNotFound"] = "StrikeNotFound";
+    /** Paid attempt: today's paid attempts of the chain are used up (see ResetsAt). Nothing was charged. */
+    CommunityGoalErrorCode["NoPaidAttemptsLeft"] = "NoPaidAttemptsLeft";
+    /** Paid attempt: the player's balance is below the price. Nothing was charged and no attempt started. */
+    CommunityGoalErrorCode["InsufficientFunds"] = "InsufficientFunds";
+    /** Paid attempt: the player must complete identity verification before paying. Nothing was charged. */
+    CommunityGoalErrorCode["KycRequired"] = "KycRequired";
+    /** Paid attempt: it cannot be bought right now (the chain sells none, it is not on sale, or the player is suspended). Nothing was charged. */
+    CommunityGoalErrorCode["EntryUnavailable"] = "EntryUnavailable";
+    /**
+     * Paid attempt: the payment is not confirmed yet. Call StartGoalAttempt again: it never charges twice for
+     * one attempt, and the attempt is handed out once it is paid.
+     */
+    CommunityGoalErrorCode["PaymentPending"] = "PaymentPending";
+    /** The player's Funtico session belongs to another game or has expired. Signing in to this game again fixes it. */
+    CommunityGoalErrorCode["ReloginRequired"] = "ReloginRequired";
     /** The response carried no recognisable code, or the payload signer could not sign the result (nothing was sent). */
     CommunityGoalErrorCode["Unknown"] = "Unknown";
 })(CommunityGoalErrorCode || (CommunityGoalErrorCode = {}));
@@ -2742,6 +2758,10 @@ export class FunticoSDK {
      * (one of the day's attempts), plays, and completes it with a contribution: a whole number of
      * whatever the game counts. What a contribution means, and the goal's own data (PayloadJson), are
      * entirely the game's. Reads work before sign-in; attempts need a signed-in player.
+     *
+     * A chain may also sell paid attempts (CommunityGoalChain.PaidAttempts): StartGoalAttempt with
+     * { paid: true } charges the price once and hands the attempt out when it is paid. Paid attempts have
+     * their own daily limit and count in the goal and the leaderboard like free ones.
      */
     /** The chain's open goal (or its latest while the next one is not open yet) and the player's own state. */
     async GetCommunityGoal(chainKey) {
@@ -2777,20 +2797,39 @@ export class FunticoSDK {
      * when it belongs to another goal, so always play against the returned Goal. options.startData is
      * kept with a new attempt and comes back in Attempt.StartData on every resume.
      *
+     * With options.paid the attempt is one of the chain's paid ones: the price is charged once per
+     * attempt (calling again never charges twice) and the attempt is returned only when it is paid
+     * (Entry.Status 'Charged'). It is paid back only if it never reached the player. After it was
+     * handed out there is no refund, also when it expires unfinished.
+     *
      * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt),
-     * `DataTooLarge`.
+     * `DataTooLarge`. Paid attempts: `NoPaidAttemptsLeft` (see ResetsAt), `InsufficientFunds`,
+     * `KycRequired`, `EntryUnavailable` (nothing charged), `PaymentPending` (call again later),
+     * `ReloginRequired`.
      */
     async StartGoalAttempt(goalId, options = {}) {
         const hasData = typeof options.startData === 'string' && options.startData.length > 0;
+        const paid = options.paid === true;
+        const body = {};
+        if (hasData)
+            body.StartData = options.startData;
+        if (paid)
+            body.Paid = true;
+        const hasBody = hasData || paid;
         const response = await fetch(`${this.apiUri}/CommunityGoal/attempt/start?goalId=${encodeURIComponent(goalId)}`, {
             method: "POST",
-            headers: this.getAuthHeaders(hasData),
-            ...(hasData ? { body: JSON.stringify({ StartData: options.startData }) } : {})
+            headers: this.getAuthHeaders(hasBody),
+            ...(hasBody ? { body: JSON.stringify(body) } : {})
         });
         if (!response.ok)
             await this.throwCommunityGoalError(response, "Failed to start a goal attempt");
         const wire = await response.json();
-        return { ...wire, Attempt: this.mapGoalAttempt(wire.Attempt), Goal: this.mapCommunityGoal(wire.Goal) };
+        const entry = wire.Entry;
+        return {
+            ...wire, Attempt: this.mapGoalAttempt(wire.Attempt), Goal: this.mapCommunityGoal(wire.Goal),
+            PaidAttemptsLeftToday: wire.PaidAttemptsLeftToday ?? null,
+            Entry: entry ? { Status: entry.Status, Amount: entry.Amount ?? null, BalanceAfter: entry.BalanceAfter ?? null } : null
+        };
     }
     /**
      * Completes an attempt with its contribution, once: a repeat returns the first result
@@ -2832,7 +2871,7 @@ export class FunticoSDK {
         const wire = await response.json();
         return {
             ...wire, MilestonesCrossed: wire.MilestonesCrossed ?? [], NextGoalId: wire.NextGoalId ?? null, Place: wire.Place ?? null,
-            Best: wire.Best ?? 0, IsNewBest: wire.IsNewBest ?? false
+            Best: wire.Best ?? 0, IsNewBest: wire.IsNewBest ?? false, PaidAttemptsLeftToday: wire.PaidAttemptsLeftToday ?? null
         };
     }
     /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
@@ -2964,13 +3003,18 @@ export class FunticoSDK {
     mapCommunityGoalState(wire) {
         const me = wire.Me ?? null;
         const rewards = me?.Rewards ?? [];
+        const paid = wire.Chain?.PaidAttempts;
         return {
             ...wire,
-            Chain: { ...wire.Chain, Milestones: wire.Chain?.Milestones ?? [] },
+            Chain: {
+                ...wire.Chain, Milestones: wire.Chain?.Milestones ?? [],
+                PaidAttempts: paid ? { ...paid, DisplayPrice: paid.DisplayPrice ?? null, PerDay: paid.PerDay ?? 0 } : null
+            },
             Goal: this.mapCommunityGoal(wire.Goal),
             Me: me ? {
                 ...me, OpenAttempt: this.mapGoalAttempt(me.OpenAttempt), Place: me.Place ?? null, FinalPlace: me.FinalPlace ?? null,
                 Bracket: me.Bracket ?? null, Best: me.Best ?? 0, RewardStatus: me.RewardStatus ?? null,
+                PaidAttemptsUsedToday: me.PaidAttemptsUsedToday ?? 0, PaidAttemptsLeftToday: me.PaidAttemptsLeftToday ?? null,
                 Rewards: rewards.map(reward => this.mapRecentReward(reward))
             } : null
         };
@@ -2978,7 +3022,7 @@ export class FunticoSDK {
     mapGoalAttempt(wire) {
         if (!wire)
             return null;
-        return { ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [], StartData: wire.StartData ?? null };
+        return { ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [], StartData: wire.StartData ?? null, Paid: wire.Paid ?? false };
     }
     mapClosedBy(wire) {
         if (!wire)

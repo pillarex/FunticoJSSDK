@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 db28992bfae0) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 72ea9a479677) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -1246,7 +1246,8 @@ export interface GhostLeaderboard {
 }
 /**
  * Machine-readable reasons a Community Goal method can fail. Branch on these, never on message text.
- * `GoalClosed` carries NextGoalId (load that goal: it has its own data); `NoAttemptsLeft` carries ResetsAt.
+ * `GoalClosed` carries NextGoalId (load that goal: it has its own data); `NoAttemptsLeft` and
+ * `NoPaidAttemptsLeft` carry ResetsAt.
  */
 export declare enum CommunityGoalErrorCode {
     ChainNotFound = "ChainNotFound",
@@ -1262,6 +1263,21 @@ export declare enum CommunityGoalErrorCode {
     DataTooLarge = "DataTooLarge",
     /** No such best strike on this goal any more (the player has struck harder since, or was removed). */
     StrikeNotFound = "StrikeNotFound",
+    /** Paid attempt: today's paid attempts of the chain are used up (see ResetsAt). Nothing was charged. */
+    NoPaidAttemptsLeft = "NoPaidAttemptsLeft",
+    /** Paid attempt: the player's balance is below the price. Nothing was charged and no attempt started. */
+    InsufficientFunds = "InsufficientFunds",
+    /** Paid attempt: the player must complete identity verification before paying. Nothing was charged. */
+    KycRequired = "KycRequired",
+    /** Paid attempt: it cannot be bought right now (the chain sells none, it is not on sale, or the player is suspended). Nothing was charged. */
+    EntryUnavailable = "EntryUnavailable",
+    /**
+     * Paid attempt: the payment is not confirmed yet. Call StartGoalAttempt again: it never charges twice for
+     * one attempt, and the attempt is handed out once it is paid.
+     */
+    PaymentPending = "PaymentPending",
+    /** The player's Funtico session belongs to another game or has expired. Signing in to this game again fixes it. */
+    ReloginRequired = "ReloginRequired",
     /** The response carried no recognisable code, or the payload signer could not sign the result (nothing was sent). */
     Unknown = "Unknown"
 }
@@ -1270,7 +1286,7 @@ export declare class CommunityGoalError extends Error {
     readonly Code: CommunityGoalErrorCode;
     /** GoalClosed: the goal open in the chain now, if any. */
     readonly NextGoalId: string | null;
-    /** NoAttemptsLeft: when the daily attempts reset (UTC midnight, ISO string). */
+    /** NoAttemptsLeft and NoPaidAttemptsLeft: when the daily attempts reset (UTC midnight, ISO string). */
     readonly ResetsAt: string | null;
     constructor(code: CommunityGoalErrorCode, message: string, nextGoalId?: string | null, resetsAt?: string | null);
 }
@@ -1291,6 +1307,31 @@ export interface CommunityGoalChain {
     AttemptTtlSeconds: number;
     /** Progress fractions (0 < f < 1) worth reacting to, ascending. */
     Milestones: number[];
+    /** Extra attempts the chain sells for PLAYR; null when it sells none. */
+    PaidAttempts: CommunityGoalPaidAttempts | null;
+}
+/** The paid attempts of a chain. A paid attempt counts in the goal like a free one. */
+export interface CommunityGoalPaidAttempts {
+    /** What the attempt buys. */
+    Product: string;
+    /** The price tier of the attempt. */
+    Tier: string;
+    /** The price in PLAYR as a decimal string ("100"), to show before the player buys. Null when it is not on sale. */
+    DisplayPrice: string | null;
+    /** Paid attempts per player per UTC day across the whole chain; 0 means no limit. */
+    PerDay: number;
+}
+/** The payment of one paid attempt. */
+export interface GoalAttemptEntry {
+    /**
+     * Charged: paid. Pending: not confirmed yet. Refused: not paid. Refunded: paid back (the attempt never
+     * reached the player). RefundPending: being paid back.
+     */
+    Status: 'Charged' | 'Pending' | 'Refused' | 'Refunded' | 'RefundPending';
+    /** The amount charged in PLAYR as a decimal string, or null. */
+    Amount: string | null;
+    /** The player's PLAYR balance after the charge as a decimal string, or null. */
+    BalanceAfter: string | null;
 }
 /** One goal of a chain and its shared state. */
 export interface CommunityGoal {
@@ -1365,6 +1406,8 @@ export interface GoalAttempt {
     MilestonesAtStart: number[];
     /** What you sent as startData when the attempt started, unchanged; the same on every resume. Null if none. */
     StartData: string | null;
+    /** True for a paid attempt. */
+    Paid: boolean;
 }
 /** Who landed the hit that reached a goal's target. */
 export interface CommunityGoalClosedBy {
@@ -1382,6 +1425,11 @@ export interface StartGoalAttemptOptions {
      * live attempt is returned again: the first one sent stays.
      */
     startData?: string;
+    /**
+     * Buy one of the chain's paid attempts (CommunityGoalChain.PaidAttempts) instead of spending a free one.
+     * The price is charged once per attempt. Ignored when the live attempt is returned again.
+     */
+    paid?: boolean;
 }
 /** A player's best strike on a goal, as GetCommunityGoalStrike returns it. */
 export interface CommunityGoalStrike {
@@ -1407,11 +1455,19 @@ export interface CommunityGoalMe {
     /** The player's largest single accepted contribution to this goal ("best strike"). */
     Best: number;
     Attempts: number;
+    /** Free attempts started today (UTC) in the chain. */
     AttemptsUsedToday: number;
-    /** Null when the chain has no daily limit. */
+    /** Free attempts left today; null when the chain has no daily limit. */
     AttemptsLeftToday: number | null;
+    /** Paid attempts started today (UTC) in the chain. */
+    PaidAttemptsUsedToday: number;
+    /** Paid attempts left today; null when the chain sells none or has no limit on them. */
+    PaidAttemptsLeftToday: number | null;
     ResetsAt: string;
-    /** The player's live attempt (possibly on another goal): finish it before starting a new one. */
+    /**
+     * The player's live attempt (possibly on another goal): finish it before starting a new one. A paid
+     * attempt shows here only once it is paid.
+     */
     OpenAttempt: GoalAttempt | null;
     /** Settled goals: the final place and the reward bracket it fell into. */
     FinalPlace: number | null;
@@ -1461,8 +1517,13 @@ export interface GoalAttemptStart {
      * Attempt.MilestonesAtStart - on a resumed attempt the goal may have moved on since the start.
      */
     Goal: CommunityGoal;
+    /** Free attempts left today; null when the chain has no daily limit. */
     AttemptsLeftToday: number | null;
+    /** Paid attempts left today; null when the chain sells none or has no limit on them. */
+    PaidAttemptsLeftToday: number | null;
     ResetsAt: string;
+    /** The payment of a paid attempt; null for a free one. */
+    Entry: GoalAttemptEntry | null;
 }
 export interface CompleteGoalAttemptOptions {
     /** Your own measure of the attempt; informative only. */
@@ -1506,6 +1567,8 @@ export interface GoalAttemptResult {
     IsNewBest: boolean;
     Place: number | null;
     AttemptsLeftToday: number | null;
+    /** Paid attempts left today; null when the chain sells none or has no limit on them. */
+    PaidAttemptsLeftToday: number | null;
     ResetsAt: string;
 }
 export interface CommunityGoalLeaderboardEntry {
@@ -2336,8 +2399,15 @@ export declare class FunticoSDK {
      * when it belongs to another goal, so always play against the returned Goal. options.startData is
      * kept with a new attempt and comes back in Attempt.StartData on every resume.
      *
+     * With options.paid the attempt is one of the chain's paid ones: the price is charged once per
+     * attempt (calling again never charges twice) and the attempt is returned only when it is paid
+     * (Entry.Status 'Charged'). It is paid back only if it never reached the player. After it was
+     * handed out there is no refund, also when it expires unfinished.
+     *
      * Rejects with CommunityGoalError: `GoalClosed` (load NextGoalId), `NoAttemptsLeft` (see ResetsAt),
-     * `DataTooLarge`.
+     * `DataTooLarge`. Paid attempts: `NoPaidAttemptsLeft` (see ResetsAt), `InsufficientFunds`,
+     * `KycRequired`, `EntryUnavailable` (nothing charged), `PaymentPending` (call again later),
+     * `ReloginRequired`.
      */
     StartGoalAttempt(goalId: string, options?: StartGoalAttemptOptions): Promise<GoalAttemptStart>;
     /**
