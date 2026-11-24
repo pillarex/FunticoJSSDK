@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 72ea9a479677) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 ec5f21eeb292) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -281,7 +281,7 @@ export var CraftStatus;
 /** Values of RecentReward.Status. */
 export var RecentRewardStatus;
 (function (RecentRewardStatus) {
-    /** Accepted and on its way to the player's inventory. */
+    /** Accepted and on its way to the player's inventory (RecentReward.Delayed: asked to be sent later). */
     RecentRewardStatus["Queued"] = "Queued";
     /** In the player's inventory. */
     RecentRewardStatus["Delivered"] = "Delivered";
@@ -2435,7 +2435,9 @@ export class FunticoSDK {
                 Amount: item.Amount ?? 1
             })),
             CreatedAt: reward.CreatedAt,
-            DeliveredAt: reward.DeliveredAt ?? null
+            DeliveredAt: reward.DeliveredAt ?? null,
+            Delayed: reward.Delayed ?? false,
+            RetryAt: reward.RetryAt ?? null
         };
     }
     mapInventoryItem(wire) {
@@ -2597,6 +2599,9 @@ export class FunticoSDK {
      * be omitted: the server fills them) and, optionally, the player's own ship to store in the
      * same request. Searching again before reporting returns the same match.
      *
+     * In a pool whose opponents may carry a reward, Match.Carry says what this one carries (null:
+     * nothing); it is decided when the opponent is issued and does not change on a new search.
+     *
      * Rejects with GhostError; `NoOpponent` is a normal outcome. In a paid pool it rejects with
      * `PaymentPending` until the run's entry payment is confirmed (see StartGhostRun).
      */
@@ -2634,7 +2639,8 @@ export class FunticoSDK {
     }
     /**
      * Reports the fight of a match, once. A repeated report returns the first result. The result
-     * is encrypted and signed like a campaign completion.
+     * is encrypted and signed like a campaign completion. CarryWon is the opponent's carried reward
+     * when the fight counted as a win; when the fight ended the run, Run.Rewards lists what it paid.
      *
      * @param fightHash Optional: your hash of the fight (up to 128 characters), kept with the match
      *                  so the fight can be checked later.
@@ -2668,7 +2674,7 @@ export class FunticoSDK {
         if (!response.ok)
             await this.throwGhostError(response, "Failed to report the ghost fight");
         const wire = await response.json();
-        return { ...wire, Run: this.mapGhostRun(wire.Run) };
+        return { ...wire, Run: this.mapGhostRun(wire.Run), CarryWon: wire.CarryWon ? { Code: wire.CarryWon.Code } : null };
     }
     /** What the player's ghosts did since the previous call; the call resets the "New" counters. */
     async GetGhostReportSummary(pool) {
@@ -2720,16 +2726,18 @@ export class FunticoSDK {
         };
     }
     mapGhostMatch(wire) {
-        return { ...wire, OpponentAttributes: wire.OpponentAttributes ?? {} };
+        return { ...wire, OpponentAttributes: wire.OpponentAttributes ?? {}, Carry: wire.Carry ? { Code: wire.Carry.Code } : null };
     }
-    // Entry is null in a free pool (and absent from older answers).
+    // Entry is null in a free pool, and Entry and Rewards are absent from older answers.
     mapGhostRun(wire) {
         if (!wire)
             return null;
         const entry = wire.Entry;
+        const rewards = wire.Rewards ?? [];
         return {
             ...wire,
-            Entry: entry ? { Status: entry.Status, Amount: entry.Amount ?? null, BalanceAfter: entry.BalanceAfter ?? null } : null
+            Entry: entry ? { Status: entry.Status, Amount: entry.Amount ?? null, BalanceAfter: entry.BalanceAfter ?? null } : null,
+            Rewards: rewards.map(reward => this.mapRecentReward(reward))
         };
     }
     async throwGhostError(response, fallback) {

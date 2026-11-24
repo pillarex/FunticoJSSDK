@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 72ea9a479677) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 ec5f21eeb292) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -973,7 +973,7 @@ export interface CraftResult {
 }
 /** Values of RecentReward.Status. */
 export declare enum RecentRewardStatus {
-    /** Accepted and on its way to the player's inventory. */
+    /** Accepted and on its way to the player's inventory (RecentReward.Delayed: asked to be sent later). */
     Queued = "Queued",
     /** In the player's inventory. */
     Delivered = "Delivered",
@@ -1011,6 +1011,13 @@ export interface RecentReward {
     CreatedAt: string;
     /** ISO-8601, UTC; null until delivered. */
     DeliveredAt: string | null;
+    /**
+     * Queued, and it was asked to be sent later (a daily limit or a pause between rewards): still on its
+     * way and sent again by itself. False while it is simply being sent.
+     */
+    Delayed: boolean;
+    /** For a Queued reward: when the next delivery try is due (ISO-8601, UTC); null when none is scheduled. */
+    RetryAt: string | null;
 }
 /** The player's latest rewards in this game, newest first, as returned by GetRecentRewards. */
 export interface RecentRewardsResponse {
@@ -1128,6 +1135,17 @@ export interface GhostRun {
     FinishedAt: string | null;
     /** The run's entry payment; null in a free pool. */
     Entry: GhostRunEntry | null;
+    /**
+     * What the run paid (rewards carried by beaten opponents and the run's reward steps), each with its
+     * delivery status. Filled once the run has ended: in the report that ended it and in the abandon
+     * result; empty before that. GetRecentRewards lists the same entries with Source 'Arena'.
+     */
+    Rewards: RecentReward[];
+}
+/** A reward an opponent carries: winning that fight pays it. */
+export interface GhostCarry {
+    /** What it is, as the pool's rules name it (for example 'chest_rare'): show the matching art. */
+    Code: string;
 }
 /** An issued opponent. Report the fight with MatchId, once. */
 export interface GhostMatch {
@@ -1147,6 +1165,12 @@ export interface GhostMatch {
     /** Name of the search step that found the opponent ("Fallback" for a fallback bot). */
     Step: string;
     ExpiresAt: string;
+    /**
+     * What this opponent carries, decided when the opponent was issued (the same on every resume); null
+     * when it carries nothing. Winning this fight pays it; a loss, a draw counted as a loss or an expiry
+     * does not.
+     */
+    Carry: GhostCarry | null;
 }
 /** The player's active run and its open match: resume after a reload. */
 export interface GhostRunState {
@@ -1180,8 +1204,10 @@ export interface GhostReportResult {
     PlayerRatingAfter: number;
     OpponentRatingBefore: number;
     OpponentRatingAfter: number;
-    /** The run after the fight (null in pools without runs). */
+    /** The run after the fight (null in pools without runs). When this fight ended the run, Run.Rewards lists what it paid. */
     Run: GhostRun | null;
+    /** What this fight won: the opponent's Carry when the fight counted as a win; null otherwise (the same on a repeated report). */
+    CarryWon: GhostCarry | null;
 }
 /** What the player's ghosts did since the previous call. */
 export interface GhostReportSummary {
@@ -2355,6 +2381,9 @@ export declare class FunticoSDK {
      * be omitted: the server fills them) and, optionally, the player's own ship to store in the
      * same request. Searching again before reporting returns the same match.
      *
+     * In a pool whose opponents may carry a reward, Match.Carry says what this one carries (null:
+     * nothing); it is decided when the opponent is issued and does not change on a new search.
+     *
      * Rejects with GhostError; `NoOpponent` is a normal outcome. In a paid pool it rejects with
      * `PaymentPending` until the run's entry payment is confirmed (see StartGhostRun).
      */
@@ -2363,7 +2392,8 @@ export declare class FunticoSDK {
     UploadGhostSnapshot(pool: string, attributes: Record<string, number>, snapshot: string): Promise<GhostUploadResult>;
     /**
      * Reports the fight of a match, once. A repeated report returns the first result. The result
-     * is encrypted and signed like a campaign completion.
+     * is encrypted and signed like a campaign completion. CarryWon is the opponent's carried reward
+     * when the fight counted as a win; when the fight ended the run, Run.Rewards lists what it paid.
      *
      * @param fightHash Optional: your hash of the fight (up to 128 characters), kept with the match
      *                  so the fight can be checked later.

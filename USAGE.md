@@ -3217,6 +3217,8 @@ GetRecentRewards(limit?: number, since?: Date | null): Promise<RecentRewardsResp
 - `Status` - A `RecentRewardStatus` value: `Queued` (on its way), `Delivered`, `Empty` (a random draw that paid nothing), `Refused`, `Failed`
 - `Items` - `{ ItemId, GameItemId, Name, ImageUrl, Amount }[]`; empty for an `Empty` draw
 - `CreatedAt` / `DeliveredAt` - ISO-8601 strings (UTC); `DeliveredAt` is null until delivered
+- `Delayed` - `true` for a `Queued` reward that was asked to be sent later (a daily limit or a pause between rewards): it is still on its way and is sent again by itself. `false` while it is simply being sent
+- `RetryAt` - For a `Queued` reward: when the next delivery try is due (ISO-8601, UTC); null when none is scheduled
 
 Rewards are paid by the server once the result is accepted. A reward that could not reach the platform yet stays `Queued` and is delivered later, at the latest on the player's next login. A result the platform has not accepted never appears. Always calls the server; rejects with an `InventoryError`.
 
@@ -3337,7 +3339,7 @@ AbandonGhostRun(pool: string): Promise<GhostRunState>
 - `StartGhostRun` starts a run, or returns the active one. Rejects with `RunNotSupported` in a pool without runs. In a paid pool it charges the entry once per run; calling it again resumes the same run and never charges again. Rejects with `InsufficientFunds`, `KycRequired` or `EntryUnavailable` when the entry cannot be paid (nothing is charged and no run starts), and with `PaymentPending` while the payment is not confirmed yet: call it again later.
 - `AbandonGhostRun` closes the active run. An open match is closed as not reported, which usually counts as a loss: abandoning cannot be used to dodge an opponent. Rejects with `RunNotActive` when there is nothing to abandon. In a paid pool, abandoning before the run got its first opponent refunds the entry (`Entry.Status` becomes `Refunded`); after an opponent was issued there is no refund.
 
-**GhostRun Properties:** `RunId`, `Pool`, `Partition`, `Status` (`'Active' | 'Finished' | 'Abandoned'`), `Round` (= `Fights + 1`), `Fights`, `Wins`, `Losses`, `Draws`, `MaxWins`, `MaxLosses`, `MaxRounds`, `StartedAt`, `FinishedAt`, `Entry`.
+**GhostRun Properties:** `RunId`, `Pool`, `Partition`, `Status` (`'Active' | 'Finished' | 'Abandoned'`), `Round` (= `Fights + 1`), `Fights`, `Wins`, `Losses`, `Draws`, `MaxWins`, `MaxLosses`, `MaxRounds`, `StartedAt`, `FinishedAt`, `Entry`, `Rewards` (`RecentReward[]`: what the run paid, each with its delivery status; filled once the run has ended, in the report that ended it and in the abandon result, empty before that; `GetRecentRewards` lists the same entries with `Source: 'Arena'`).
 
 **GhostRunEntry Properties** (`Run.Entry`; `null` in a free pool):
 - `Status` - `'Charged'` (paid), `'Pending'` (not confirmed yet), `'Refused'` (not paid), `'Refunded'` (paid back), `'RefundPending'` (being paid back).
@@ -3398,11 +3400,13 @@ FindGhostOpponent(pool: string, attributes: Record<string, number>, options: Gho
 - `options.allowBots` - `false` forbids bots for this search. Default: `true`.
 
 **Returns:** `GhostFindResult`:
-- `Match` (`GhostMatch`) - The opponent: `MatchId`, `SnapshotId`, `SnapshotJson` (the opponent's ship exactly as uploaded), `SnapshotSha256` (lowercase hex SHA-256 of its UTF-8 bytes), `IsBot`, `OwnerName`, `OwnerAvatarUrl`, `OwnerBorderUrl`, `OwnerRating`, `PlayerRating`, `OpponentAttributes`, `Step` (the search step that found it) and `ExpiresAt`.
+- `Match` (`GhostMatch`) - The opponent: `MatchId`, `SnapshotId`, `SnapshotJson` (the opponent's ship exactly as uploaded), `SnapshotSha256` (lowercase hex SHA-256 of its UTF-8 bytes), `IsBot`, `OwnerName`, `OwnerAvatarUrl`, `OwnerBorderUrl`, `OwnerRating`, `PlayerRating`, `OpponentAttributes`, `Step` (the search step that found it), `ExpiresAt` and `Carry` (`GhostCarry | null`: what this opponent carries, `{ Code }` such as `'chest_rare'`; `null` when nothing).
 - `Run` (`GhostRun | null`) - The run, in pools with runs.
 - `UploadedSnapshotId` (`string | null`) - Id of the ship stored by this request.
 
 **Searching again before reporting returns the same match** (and stores no new ship), so an unwanted opponent cannot be rerolled. A match not reported by `ExpiresAt` is closed by the server and usually counts as a loss.
+
+**Carried rewards.** In a pool whose opponents may carry a reward (for example a chest), the server decides when it issues the opponent whether it carries one and which, and `Match.Carry` tells you before the fight. It stays the same on every new search and on `GetGhostRun`'s `OpenMatch`. Winning that fight pays it (`GhostReportResult.CarryWon`); a loss, a draw that counts as a loss, an expired match or an abandoned run does not.
 
 **Usage:**
 ```js
@@ -3457,7 +3461,7 @@ ReportGhostResult(
 - `fightHash` - Optional: your game's hash of the fight (up to 128 characters), kept with the match for a later replay check.
 - `matchData` - Optional: your evidence for a later check of this fight, in your own format (for example your run's log up to and including this fight). It is signed together with the report and kept with the match; an empty string is the same as none. At most 32 KB in UTF-8: a larger one rejects with `DataTooLarge`, nothing is recorded and the match stays open, so report again without it.
 
-**Returns:** `GhostReportResult` with `MatchId`, `Outcome`, `PlayerRatingBefore`, `PlayerRatingAfter`, `OpponentRatingBefore`, `OpponentRatingAfter` and `Run`.
+**Returns:** `GhostReportResult` with `MatchId`, `Outcome`, `PlayerRatingBefore`, `PlayerRatingAfter`, `OpponentRatingBefore`, `OpponentRatingAfter`, `Run` and `CarryWon` (`GhostCarry | null`: the opponent's carried reward when this fight counted as a win; the same on a repeated report). When this fight ended the run, `Run.Rewards` lists everything the run paid: the carried rewards and the run's reward steps, each `Queued` (on its way; `Delayed` when asked to be sent later), `Delivered`, `Empty`, `Refused` or `Failed`.
 
 A repeated report of the same match returns the first result unchanged, so retrying after a network error is safe. Rejects with `MatchExpired` when the match was closed before the report arrived.
 
