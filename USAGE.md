@@ -2959,11 +2959,11 @@ const { CampaignError, CampaignErrorCode } = FunticoSDK;
 
 The player's items on the Funtico platform: what they own, how many copies, and what each item means to your game. Items are defined in the Funtico item catalog, where each item can carry **properties**: a JSON object whose game-specific part belongs to your game (for example which module a blueprint unlocks).
 
-These methods are **read-only.** Items are granted by the platform (prizes, rewards) and by server-side flows, never from the game client.
+Items are granted by the platform (prizes, rewards) and by server-side flows, never from the game client. The only way the client changes the inventory is to exchange items by the rules your studio configured for the game: **recipes** (`CraftItem`: fixed inputs into fixed outputs) and **fusions** (`FuseItems`: copies the player picks into one random result). Read the rules with `GetRecipes`.
 
 > **Casing note:** Inventory responses are **PascalCase** (`Items`, `GameItemId`, `Count`).
 
-**Failure model.** Inventory methods reject with an `InventoryError` carrying a machine-readable `Code`. Branch on the code, never on message text. `ReloginRequired` means the player's Funtico session belongs to another game or has expired: sign the player in to this game again.
+**Failure model.** Inventory methods reject with an `InventoryError` carrying a machine-readable `Code`. Branch on the code, never on message text. `ReloginRequired` means the player's Funtico session belongs to another game or has expired: sign the player in to this game again. `CraftItem` and `FuseItems` are the exception for decided outcomes: a refused craft resolves normally with `Status: 'Refused'` (see [`CraftResult`](#craftresult)).
 
 ---
 
@@ -3053,6 +3053,149 @@ if (props?.game?.type === 'blueprint_shard') {
 
 ---
 
+### `GetRecipes`
+
+The crafting recipes and fusions configured for your game. Read them to build the crafting screen instead of hardcoding them.
+
+**Signature:**
+```ts
+GetRecipes(): Promise<RecipesResponse>
+```
+
+**Returns:** `Promise<RecipesResponse>` with `Recipes: CraftRecipe[]` and `Fusions: FusionRecipe[]`.
+
+**CraftRecipe Properties:**
+- `Key` (`string`) - Pass it to `CraftItem`.
+- `Name` (`string | null`) - Display name.
+- `HasId` (`boolean`) - `true` when the item keys contain `{id}`, so `CraftItem` needs an id.
+- `Inputs` / `Outputs` (`CraftRecipeItem[]`) - `{ Item, Amount }` lines: what the recipe takes and what it gives. `Item` is your game's item key and may contain the placeholder `{id}`, which `CraftItem` fills with the id you pass: `sg_shard_{id}` with the id `laser_pulse` is `sg_shard_laser_pulse`.
+
+**FusionRecipe Properties:**
+- `Key` (`string`) - Pass it to `FuseItems`.
+- `Name` (`string | null`) - Display name.
+- `Need` (`number`) - How many copies one fusion takes.
+- `Inputs` (`string[]`) - Your game's item keys a picked copy may be of.
+- `Results` (`string[]`) - Your game's item keys the random result may be.
+
+Always calls the server (nothing is cached): read it when the crafting screen opens. Rejects with an `InventoryError`.
+
+---
+
+### `CraftItem`
+
+Crafts by a fixed recipe: takes the recipe's `Inputs` from the player and gives its `Outputs`.
+
+**Signature:**
+```ts
+CraftItem(recipe: string, id?: string | null, idempotencyKey?: string | null): Promise<CraftResult>
+```
+
+**Parameters:**
+- `recipe` - `CraftRecipe.Key`.
+- `id` - Fills `{id}` in the recipe's item keys: 1-48 characters of `a-z`, `0-9` and `_`. Pass `null` for a recipe whose `HasId` is `false`. Default: `null`.
+- `idempotencyKey` - Optional: 8-64 characters of `A-Z a-z 0-9 _ . : -`. Calls with the same key are one action, done at most once. Omit it and the SDK generates a new key for this call. Default: `null`.
+
+**Returns:** `Promise<CraftResult>`, see [`CraftResult`](#craftresult).
+
+---
+
+### `FuseItems`
+
+Fuses copies the player picked: takes them and gives one random item of the fusion's `Results`.
+
+**Signature:**
+```ts
+FuseItems(fusion: string, userItemIds: number[], idempotencyKey?: string | null): Promise<CraftResult>
+```
+
+**Parameters:**
+- `fusion` - `FusionRecipe.Key`.
+- `userItemIds` - Exactly `Need` copy ids, each once, from `InventoryItem.UserItemIds` of items whose `GameItemId` is in the fusion's `Inputs`. Copies that do not fit (not the player's, not eligible, the wrong count) reject with `WrongItems`.
+- `idempotencyKey` - As for `CraftItem`. Default: `null`.
+
+**Returns:** `Promise<CraftResult>`, see [`CraftResult`](#craftresult).
+
+---
+
+### `CraftResult`
+
+`CraftItem` and `FuseItems` resolve with a `CraftResult` whenever the server decided, or has not decided yet. A refusal is a normal result, not an error.
+
+**CraftResult Properties:**
+- `Status` (`string`) - A `CraftStatus` value:
+  - `Succeeded` - Done. `Burned` lists what was taken, `Granted` what the player received.
+  - `Pending` - Not confirmed yet. Call again with the same arguments and the same `IdempotencyKey` until the status is `Succeeded` or `Refused`. Nothing is lost or given twice.
+  - `Refused` - Nothing changed; `Reason` says why. A new attempt needs a new key.
+- `Replayed` (`boolean`) - `true` when this answer repeats an earlier call made with the same key.
+- `Burned` / `Granted` (`CraftResultItem[]`) - `{ GameItemId, UserItemIds }` per item: the copies taken or given. Empty unless `Succeeded`.
+- `Reason` (`string | null`) - Why a refused action was refused, as a machine-readable string, for example `not_enough_items`, `item_locked`, `unknown_game_item_id`, `max_supply_reached`. Branch on it, never on `Message`.
+- `Message` (`string | null`) - Human-readable detail.
+- `OperationId` (`string`) - Id of the action. Quote it when reporting a problem.
+- `IdempotencyKey` (`string`) - The key this call used: yours, or the one the SDK generated.
+
+After `Succeeded` or `Pending` the cached inventory is dropped, so the next `GetInventory` reads fresh. Anything else rejects with an `InventoryError`: `InvalidRequest`, `UnknownRule`, `KeyReused`, `WrongItems`, `Misconfigured`, or one of the codes every Inventory method can return.
+
+**Retrying.** Repeating the same action with the same key is always safe: it happens at most once, and a repeat answers with the first outcome (`Replayed: true`).
+- On `Pending`, call again with `result.IdempotencyKey`.
+- When the call fails without an outcome (the connection drops, `PlatformUnavailable`), you cannot tell whether it happened. To retry it with the same key, pass your own key and keep it until you get an outcome.
+- After `Refused`, or to do the action once more (a second blueprint), use a new key, or omit it.
+
+**Usage:**
+```js
+import { CraftStatus, InventoryError, InventoryErrorCode } from './funtico-sdk.mjs';
+
+// Calls again with the same key while the outcome is Pending.
+async function settle(result, again) {
+  for (let attempt = 1; result.Status === CraftStatus.Pending && attempt <= 5; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    result = await again(result.IdempotencyKey);
+  }
+  return result;
+}
+
+const { Recipes, Fusions } = await sdk.GetRecipes();
+
+// 1. Craft a blueprint from the shards of one part.
+const blueprint = Recipes.find(r => r.Key === 'blueprint');
+const partId = 'laser_pulse';
+const crafted = await settle(
+  await sdk.CraftItem(blueprint.Key, partId),
+  key => sdk.CraftItem(blueprint.Key, partId, key));
+
+if (crafted.Status === CraftStatus.Succeeded) {
+  showReceived(crafted.Granted);                 // [{ GameItemId: 'sg_bp_laser_pulse', ... }]
+} else if (crafted.Status === CraftStatus.Refused) {
+  showRefusal(crafted.Reason, crafted.Message);  // e.g. 'not_enough_items'
+} else {
+  showTryLater();                                // still Pending: retry later with crafted.IdempotencyKey
+}
+
+// 2. Fuse 4 copies the player picked from the inventory.
+const fusion = Fusions.find(f => f.Key === 'rare_to_epic');
+const inventory = await sdk.GetInventory(false);
+const eligible = inventory.Items
+  .filter(item => fusion.Inputs.includes(item.GameItemId))
+  .flatMap(item => item.UserItemIds);
+const picked = eligible.slice(0, fusion.Need);   // in your game: the copies the player selected
+
+try {
+  const fused = await settle(
+    await sdk.FuseItems(fusion.Key, picked),
+    key => sdk.FuseItems(fusion.Key, picked, key));
+  if (fused.Status === CraftStatus.Succeeded) {
+    showReceived(fused.Granted);                 // one random item of fusion.Results
+  }
+} catch (error) {
+  if (error instanceof InventoryError && error.Code === InventoryErrorCode.WrongItems) {
+    pickAgain(await sdk.GetInventory(false));    // the picked copies no longer fit
+  } else {
+    throw error;
+  }
+}
+```
+
+---
+
 ### `GetRecentRewards`
 
 The player's latest rewards in this game, newest first: what runs (`RecordCollected_Client`), campaign levels and arena runs paid. Call it after a result to show what the run brought.
@@ -3102,6 +3245,11 @@ The error every Inventory method rejects with.
 - `NotLinked` - The player is not linked to a Funtico account.
 - `ReloginRequired` - The player's Funtico session belongs to another game or has expired. Sign the player in to this game again.
 - `PlatformUnavailable` - The Funtico platform did not answer. Try again later.
+- `InvalidRequest` - A field of a craft or fusion is missing or malformed, for example the id or the `idempotencyKey`.
+- `UnknownRule` - The game has no recipe or fusion with that key.
+- `KeyReused` - The `idempotencyKey` was already used for a different action. Use a new key.
+- `WrongItems` - The copies passed to `FuseItems` do not fit the fusion: not the player's, not eligible, or the wrong count.
+- `Misconfigured` - The game's recipes or fusions are set up wrong. Not something the player can fix.
 - `Unknown` - The response carried no recognisable code.
 
 **Usage:**
@@ -3136,6 +3284,15 @@ The server owns everything that affects other players: which opponent was issued
 
 **Ships are your game's data.** `snapshot` is any JSON string your game can rebuild a ship from; the server stores and returns it unchanged. Keep it small (the pool sets a size limit) and include a version field of your own so old ships stay readable after an update.
 
+**Paid pools.** A pool whose `Entry` is set charges an entry in PLAYR for each run:
+- Show `pool.Entry.DisplayPrice` before the player enters.
+- `StartGhostRun` charges the entry once per run. Calling it again resumes the same run and never charges again.
+- After the charge, show `run.Entry.Amount` and `run.Entry.BalanceAfter`.
+- `AbandonGhostRun` before the run got its first opponent refunds the entry: the run's `Entry.Status` becomes `Refunded`. Once an opponent was issued there is no refund.
+- `InsufficientFunds`, `KycRequired` and `EntryUnavailable` mean nothing was charged and no run started. `PaymentPending` means the payment is not confirmed yet: call `StartGhostRun` again later; until then `FindGhostOpponent` rejects with `PaymentPending` too.
+
+Free pools have `Entry: null`, and so do their runs.
+
 > **Casing note:** Ghost responses are **PascalCase** (`Match`, `MatchId`, `SnapshotJson`).
 
 **Failure model.** Ghost methods reject with a `GhostError` carrying a machine-readable `Code`: branch on the code, never on message text. `NoOpponent` is a normal outcome, not a failure: nobody matched and no bot was available.
@@ -3159,6 +3316,7 @@ GetGhostPools(): Promise<GhostPool[]>
 - `MaxWins`, `MaxLosses`, `MaxRounds` (`number | null`) - The run limits.
 - `Attributes` (`GhostAttribute[]`) - What the pool matches on: `Name`, `Min`, `Max`, `Exact` (matched exactly on every search step) and `Bind` (`"Run.Round"`, `"Run.Wins"`, `"Run.Losses"` or `null`; bound attributes are filled from the run and may be omitted).
 - `Rating` (`number`) - The player's rating in the current season.
+- `Entry` (`GhostEntry | null`) - The entry each run costs, or `null` for a free pool: `Product` and `Tier` (what is bought, at which price tier) and `DisplayPrice` (`string | null`, the price in PLAYR as a decimal string such as `"100"`, to show before the player enters).
 
 ---
 
@@ -3176,10 +3334,15 @@ AbandonGhostRun(pool: string): Promise<GhostRunState>
 **Returns:** `GhostRunState` with `Run: GhostRun | null` and `OpenMatch: GhostMatch | null`.
 
 - `GetGhostRun` returns the active run and its open match, so a reloaded game resumes the same fight. `Run` is `null` when the player has no active run. In a pool without runs both fields are always `null`: call `FindGhostOpponent` again to get the open match back.
-- `StartGhostRun` starts a run, or returns the active one. Rejects with `RunNotSupported` in a pool without runs.
-- `AbandonGhostRun` closes the active run. An open match is closed as not reported, which usually counts as a loss: abandoning cannot be used to dodge an opponent. Rejects with `RunNotActive` when there is nothing to abandon.
+- `StartGhostRun` starts a run, or returns the active one. Rejects with `RunNotSupported` in a pool without runs. In a paid pool it charges the entry once per run; calling it again resumes the same run and never charges again. Rejects with `InsufficientFunds`, `KycRequired` or `EntryUnavailable` when the entry cannot be paid (nothing is charged and no run starts), and with `PaymentPending` while the payment is not confirmed yet: call it again later.
+- `AbandonGhostRun` closes the active run. An open match is closed as not reported, which usually counts as a loss: abandoning cannot be used to dodge an opponent. Rejects with `RunNotActive` when there is nothing to abandon. In a paid pool, abandoning before the run got its first opponent refunds the entry (`Entry.Status` becomes `Refunded`); after an opponent was issued there is no refund.
 
-**GhostRun Properties:** `RunId`, `Pool`, `Partition`, `Status` (`'Active' | 'Finished' | 'Abandoned'`), `Round` (= `Fights + 1`), `Fights`, `Wins`, `Losses`, `Draws`, `MaxWins`, `MaxLosses`, `MaxRounds`, `StartedAt`, `FinishedAt`.
+**GhostRun Properties:** `RunId`, `Pool`, `Partition`, `Status` (`'Active' | 'Finished' | 'Abandoned'`), `Round` (= `Fights + 1`), `Fights`, `Wins`, `Losses`, `Draws`, `MaxWins`, `MaxLosses`, `MaxRounds`, `StartedAt`, `FinishedAt`, `Entry`.
+
+**GhostRunEntry Properties** (`Run.Entry`; `null` in a free pool):
+- `Status` - `'Charged'` (paid), `'Pending'` (not confirmed yet), `'Refused'` (not paid), `'Refunded'` (paid back), `'RefundPending'` (being paid back).
+- `Amount` (`string | null`) - The amount charged in PLAYR, as a decimal string.
+- `BalanceAfter` (`string | null`) - The player's PLAYR balance after the charge, as a decimal string.
 
 **Usage:**
 ```js
@@ -3189,6 +3352,30 @@ if (state.OpenMatch) {
 } else if (!state.Run) {
   const started = await sdk.StartGhostRun('arena');
   showRun(started.Run);
+}
+```
+
+**Usage (paid pool):**
+```js
+import { GhostError, GhostErrorCode } from './funtico-sdk.mjs';
+
+const pool = (await sdk.GetGhostPools()).find(p => p.Key === 'paid_arena');
+if (pool.Entry && !(await confirmEntry(pool.Entry.DisplayPrice))) return; // "Enter for 100 PLAYR?"
+
+try {
+  const { Run } = await sdk.StartGhostRun(pool.Key);
+  if (Run?.Entry?.Status === 'Charged') {
+    showCharged(Run.Entry.Amount, Run.Entry.BalanceAfter);
+  }
+} catch (error) {
+  if (!(error instanceof GhostError)) throw error;
+  switch (error.Code) {
+    case GhostErrorCode.InsufficientFunds: showTopUp(); break;
+    case GhostErrorCode.KycRequired: showVerifyIdentity(); break;
+    case GhostErrorCode.PaymentPending: retryStartLater(); break;    // never charges twice
+    case GhostErrorCode.ReloginRequired: showLogin(); break;
+    default: showEntryUnavailable(); break;                         // EntryUnavailable and others
+  }
 }
 ```
 
@@ -3374,6 +3561,11 @@ The error every Ghost method rejects with.
 - `InvalidSignature` - The report could not be verified. Check your game's private key.
 - `InvalidOutcome` - The outcome is not `Win`, `Loss` or `Draw`.
 - `DataTooLarge` - The report's `matchData` is over 32 KB in UTF-8. Nothing was recorded and the match stays open: report again without it.
+- `InsufficientFunds` - Paid pool: the player's balance is below the entry price. Nothing was charged and no run started.
+- `KycRequired` - Paid pool: the player must complete identity verification before paying an entry.
+- `EntryUnavailable` - Paid pool: the entry cannot be bought right now (no such product or price, the player is suspended, or paid entries are unavailable).
+- `PaymentPending` - Paid pool: the entry payment is not confirmed yet. Call `StartGhostRun` again; it never charges twice for one run. Until then the run gets no opponent (`FindGhostOpponent` rejects with this too).
+- `ReloginRequired` - The player's Funtico session belongs to another game or has expired. Sign the player in to this game again.
 - `Unknown` - The response carried no recognisable code, or your `payloadSigner` could not sign the report, so nothing was sent.
 
 ---

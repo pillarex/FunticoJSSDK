@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 5e12a71bdc60) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 db28992bfae0) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 (function (root, factory) {
@@ -249,6 +249,16 @@ var InventoryErrorCode;
     InventoryErrorCode["ReloginRequired"] = "ReloginRequired";
     /** The Funtico platform did not answer. Try again later. */
     InventoryErrorCode["PlatformUnavailable"] = "PlatformUnavailable";
+    /** A field of the request is missing or malformed, for example the IdempotencyKey or the id. */
+    InventoryErrorCode["InvalidRequest"] = "InvalidRequest";
+    /** The game has no recipe or fusion with that key. */
+    InventoryErrorCode["UnknownRule"] = "UnknownRule";
+    /** The IdempotencyKey was already used for a different action. Use a new key. */
+    InventoryErrorCode["KeyReused"] = "KeyReused";
+    /** The picked copies do not fit the fusion: not the player's, not eligible, or the wrong count. */
+    InventoryErrorCode["WrongItems"] = "WrongItems";
+    /** The game's recipes or fusions are set up wrong. Not something the player can fix. */
+    InventoryErrorCode["Misconfigured"] = "Misconfigured";
     /** The response carried no recognisable code. */
     InventoryErrorCode["Unknown"] = "Unknown";
 })(InventoryErrorCode || (InventoryErrorCode = {}));
@@ -264,6 +274,19 @@ class InventoryError extends Error {
         this.Code = code;
     }
 }
+/** Values of CraftResult.Status. */
+var CraftStatus;
+(function (CraftStatus) {
+    /** Done: the items in Burned were taken and the items in Granted were given. */
+    CraftStatus["Succeeded"] = "Succeeded";
+    /**
+     * Not confirmed yet. Call again with the same IdempotencyKey (CraftResult.IdempotencyKey) until
+     * the status is Succeeded or Refused; the action never happens twice.
+     */
+    CraftStatus["Pending"] = "Pending";
+    /** Nothing changed; Reason says why. Trying again needs a new IdempotencyKey. */
+    CraftStatus["Refused"] = "Refused";
+})(CraftStatus || (CraftStatus = {}));
 /** Values of RecentReward.Status. */
 var RecentRewardStatus;
 (function (RecentRewardStatus) {
@@ -298,6 +321,19 @@ var GhostErrorCode;
     GhostErrorCode["InvalidOutcome"] = "InvalidOutcome";
     /** The report's matchData is over 32 KB in UTF-8. Nothing was recorded and the match stays open: report again without it. */
     GhostErrorCode["DataTooLarge"] = "DataTooLarge";
+    /** Paid pool: the player's balance is below the entry price. Nothing was charged and no run started. */
+    GhostErrorCode["InsufficientFunds"] = "InsufficientFunds";
+    /** Paid pool: the player must complete identity verification before paying an entry. */
+    GhostErrorCode["KycRequired"] = "KycRequired";
+    /** Paid pool: the entry cannot be bought right now (no such product or price, the player is suspended, or paid entries are unavailable). */
+    GhostErrorCode["EntryUnavailable"] = "EntryUnavailable";
+    /**
+     * Paid pool: the entry payment is not confirmed yet. Call StartGhostRun again: it never charges
+     * twice for one run. Until then the run gets no opponent (FindGhostOpponent rejects with this too).
+     */
+    GhostErrorCode["PaymentPending"] = "PaymentPending";
+    /** The player's Funtico session belongs to another game or has expired. Signing in to this game again fixes it. */
+    GhostErrorCode["ReloginRequired"] = "ReloginRequired";
     /** The response carried no recognisable code, or the payload signer could not sign the report (nothing was sent). */
     GhostErrorCode["Unknown"] = "Unknown";
 })(GhostErrorCode || (GhostErrorCode = {}));
@@ -950,7 +986,8 @@ class FunticoSDK {
         };
     }
     /**
-     * Fresh random v4 UUID: the idempotency key of a join attempt, the id of a practice run.
+     * Fresh random v4 UUID: the idempotency key of a join attempt, a craft or a fusion; the id of a
+     * practice run.
      *
      * crypto.randomUUID() is only exposed in secure contexts, so it is absent (or throws) on plain
      * HTTP - which games served over http:// do hit. Fall back to getRandomValues, and only then to
@@ -2248,9 +2285,9 @@ class FunticoSDK {
      * `includeOtherItems = true` to also receive platform-wide items the player holds, such as
      * tickets, vouchers and capsules.
      *
-     * Read-only: items are granted by the platform and by server-side flows, never from the game
-     * client. Rejects with an InventoryError; on `ReloginRequired`, sign the player in to this game
-     * again.
+     * Items are granted by the platform and by server-side flows, never from the game client; the
+     * client can only exchange them by the game's recipes and fusions (CraftItem, FuseItems).
+     * Rejects with an InventoryError; on `ReloginRequired`, sign the player in to this game again.
      *
      * Shares the SDK-wide cache window (FunticoConfig.cacheTTL) with the other cached getters.
      */
@@ -2302,6 +2339,57 @@ class FunticoSDK {
         catch {
             throw new Error(`Inventory item "${item.Name}" carries properties that are not valid JSON.`);
         }
+    }
+    /**
+     * The crafting recipes and fusions of this game: what CraftItem and FuseItems can do.
+     *
+     * Always calls the server. Rejects with an InventoryError.
+     */
+    async GetRecipes() {
+        const response = await fetch(`${this.apiUri}/Inventory/recipes`, {
+            headers: this.getAuthHeaders(false)
+        });
+        if (!response.ok)
+            await this.throwInventoryError(response, "Failed to fetch recipes");
+        const wire = await response.json();
+        return {
+            Recipes: (wire.Recipes ?? []).map(recipe => this.mapCraftRecipe(recipe)),
+            Fusions: (wire.Fusions ?? []).map(fusion => this.mapFusionRecipe(fusion))
+        };
+    }
+    /**
+     * Crafts by a fixed recipe: takes the recipe's Inputs from the player and gives its Outputs.
+     *
+     * @param recipe         CraftRecipe.Key.
+     * @param id             Fills "{id}" in the recipe's item keys: 1-48 characters of a-z, 0-9 and _.
+     *                       Pass null for a recipe whose HasId is false.
+     * @param idempotencyKey Optional: 8-64 characters of A-Z, a-z, 0-9 and _ . : -. Calls with the same
+     *                       key are one action, done at most once. Omit it and the SDK generates a new
+     *                       key for this call (returned in CraftResult.IdempotencyKey).
+     *
+     * Resolves with the outcome when it is Succeeded, Pending or Refused: a refusal is a normal result,
+     * not an error. On Pending, call again with the same arguments and result.IdempotencyKey. After
+     * Succeeded or Pending the cached inventory is dropped, so the next GetInventory reads fresh.
+     * Rejects with an InventoryError for anything else.
+     */
+    async CraftItem(recipe, id = null, idempotencyKey = null) {
+        const key = idempotencyKey || this.newIdempotencyKey();
+        return this.postCraftAction('craft', { Recipe: recipe, Id: id ?? null, IdempotencyKey: key }, key, "Failed to craft");
+    }
+    /**
+     * Fuses copies the player picked: takes them and gives one random item of the fusion's Results.
+     *
+     * @param fusion         FusionRecipe.Key.
+     * @param userItemIds    Exactly `Need` copy ids, each once, taken from InventoryItem.UserItemIds of
+     *                       items listed in the fusion's Inputs. Copies that do not fit reject with
+     *                       `WrongItems`.
+     * @param idempotencyKey Optional, as for CraftItem.
+     *
+     * Resolves and rejects like CraftItem.
+     */
+    async FuseItems(fusion, userItemIds, idempotencyKey = null) {
+        const key = idempotencyKey || this.newIdempotencyKey();
+        return this.postCraftAction('fuse', { Fusion: fusion, UserItemIds: [...(userItemIds ?? [])], IdempotencyKey: key }, key, "Failed to fuse items");
     }
     /**
      * The player's latest rewards in this game, newest first: what runs (RecordCollected_Client),
@@ -2365,8 +2453,75 @@ class FunticoSDK {
             }))
         };
     }
-    async throwInventoryError(response, fallback) {
+    mapCraftRecipe(wire) {
+        const lines = (list) => (list ?? []).map(line => ({ Item: line.Item ?? '', Amount: line.Amount ?? 1 }));
+        return {
+            Key: wire.Key ?? '',
+            Name: wire.Name ?? null,
+            HasId: wire.HasId === true,
+            Inputs: lines(wire.Inputs),
+            Outputs: lines(wire.Outputs)
+        };
+    }
+    mapFusionRecipe(wire) {
+        return {
+            Key: wire.Key ?? '',
+            Name: wire.Name ?? null,
+            Need: wire.Need ?? 0,
+            Inputs: wire.Inputs ?? [],
+            Results: wire.Results ?? []
+        };
+    }
+    /**
+     * Sends a craft or a fusion. 200, 202 and 422 answer with the outcome; a 422 without `Status`
+     * and every other failure carry an Inventory error body instead.
+     */
+    async postCraftAction(path, body, idempotencyKey, fallback) {
+        const response = await fetch(`${this.apiUri}/Inventory/${path}`, {
+            method: "POST",
+            headers: this.getAuthHeaders(),
+            body: JSON.stringify(body)
+        });
         const text = await response.text();
+        if (response.ok || response.status === 422) {
+            let wire = null;
+            try {
+                wire = JSON.parse(text);
+            }
+            catch {
+                // Not a JSON body - handled below.
+            }
+            if (wire && typeof wire.Status === 'string' && wire.Status.length > 0) {
+                const result = this.mapCraftResult(wire, idempotencyKey);
+                // Items moved (or may have): the next GetInventory must read fresh.
+                if (result.Status === CraftStatus.Succeeded || result.Status === CraftStatus.Pending) {
+                    this.cachedInventory = null;
+                    this.cachedInventoryWithOtherItems = null;
+                }
+                return result;
+            }
+            if (response.ok) {
+                throw new InventoryError(InventoryErrorCode.Unknown, `${fallback}: the response carried no status.`);
+            }
+        }
+        return this.throwInventoryError(response, fallback, text);
+    }
+    mapCraftResult(wire, idempotencyKey) {
+        const items = (list) => (list ?? []).map(item => ({ GameItemId: item.GameItemId ?? '', UserItemIds: item.UserItemIds ?? [] }));
+        return {
+            OperationId: wire.OperationId ?? '',
+            Status: wire.Status ?? '',
+            Replayed: wire.Replayed === true,
+            Burned: items(wire.Burned),
+            Granted: items(wire.Granted),
+            Reason: wire.Reason ?? null,
+            Message: wire.Message ?? null,
+            IdempotencyKey: idempotencyKey
+        };
+    }
+    /** `bodyText`: the response body when the caller has already read it. */
+    async throwInventoryError(response, fallback, bodyText) {
+        const text = bodyText ?? await response.text();
         let code = InventoryErrorCode.Unknown;
         let message = text || `HTTP ${response.status}`;
         try {
@@ -2399,17 +2554,34 @@ class FunticoSDK {
         if (!response.ok)
             await this.throwGhostError(response, "Failed to fetch ghost pools");
         const wire = await response.json();
-        return (wire.Pools ?? []).map(pool => ({ ...pool, Attributes: pool.Attributes ?? [] }));
+        return (wire.Pools ?? []).map(pool => ({
+            ...pool,
+            Attributes: pool.Attributes ?? [],
+            Entry: pool.Entry ? { ...pool.Entry, DisplayPrice: pool.Entry.DisplayPrice ?? null } : null
+        }));
     }
     /** The player's active run in the pool and its open match, if any (resume after a reload). */
     async GetGhostRun(pool) {
         return this.ghostRunCall('GET', 'run', pool, "Failed to fetch the ghost run");
     }
-    /** Starts a run in a pool with runs, or returns the active one. */
+    /**
+     * Starts a run in a pool with runs, or returns the active one.
+     *
+     * In a paid pool (GhostPool.Entry set) this charges the entry, once per run: calling it again
+     * resumes the same run and never charges again. Rejects with `InsufficientFunds`, `KycRequired`
+     * or `EntryUnavailable` when the entry cannot be paid (no run is started), and with
+     * `PaymentPending` while the payment is not confirmed yet - call it again later.
+     */
     async StartGhostRun(pool) {
         return this.ghostRunCall('POST', 'run/start', pool, "Failed to start a ghost run");
     }
-    /** Gives up the active run. An open match counts as not reported (usually a loss). */
+    /**
+     * Gives up the active run. An open match counts as not reported (usually a loss).
+     *
+     * In a paid pool, abandoning before the run got its first opponent refunds the entry (the run's
+     * Entry.Status becomes Refunded, or RefundPending while the refund is on its way). After an
+     * opponent was issued there is no refund.
+     */
     async AbandonGhostRun(pool) {
         return this.ghostRunCall('POST', 'run/abandon', pool, "Failed to abandon the ghost run");
     }
@@ -2418,7 +2590,8 @@ class FunticoSDK {
      * be omitted: the server fills them) and, optionally, the player's own ship to store in the
      * same request. Searching again before reporting returns the same match.
      *
-     * Rejects with GhostError; `NoOpponent` is a normal outcome.
+     * Rejects with GhostError; `NoOpponent` is a normal outcome. In a paid pool it rejects with
+     * `PaymentPending` until the run's entry payment is confirmed (see StartGhostRun).
      */
     async FindGhostOpponent(pool, attributes, options = {}) {
         const response = await fetch(`${this.apiUri}/Ghost/find`, {
@@ -2437,7 +2610,7 @@ class FunticoSDK {
         const wire = await response.json();
         return {
             Match: this.mapGhostMatch(wire.Match),
-            Run: wire.Run ?? null,
+            Run: this.mapGhostRun(wire.Run),
             UploadedSnapshotId: wire.UploadedSnapshotId ?? null
         };
     }
@@ -2488,7 +2661,7 @@ class FunticoSDK {
         if (!response.ok)
             await this.throwGhostError(response, "Failed to report the ghost fight");
         const wire = await response.json();
-        return { ...wire, Run: wire.Run ?? null };
+        return { ...wire, Run: this.mapGhostRun(wire.Run) };
     }
     /** What the player's ghosts did since the previous call; the call resets the "New" counters. */
     async GetGhostReportSummary(pool) {
@@ -2535,12 +2708,22 @@ class FunticoSDK {
             await this.throwGhostError(response, fallback);
         const wire = await response.json();
         return {
-            Run: wire.Run ?? null,
+            Run: this.mapGhostRun(wire.Run),
             OpenMatch: wire.OpenMatch ? this.mapGhostMatch(wire.OpenMatch) : null
         };
     }
     mapGhostMatch(wire) {
         return { ...wire, OpponentAttributes: wire.OpponentAttributes ?? {} };
+    }
+    // Entry is null in a free pool (and absent from older answers).
+    mapGhostRun(wire) {
+        if (!wire)
+            return null;
+        const entry = wire.Entry;
+        return {
+            ...wire,
+            Entry: entry ? { Status: entry.Status, Amount: entry.Amount ?? null, BalanceAfter: entry.BalanceAfter ?? null } : null
+        };
     }
     async throwGhostError(response, fallback) {
         const text = await response.text();
@@ -3197,6 +3380,7 @@ return {
   CampaignError: CampaignError,
   InventoryErrorCode: InventoryErrorCode,
   InventoryError: InventoryError,
+  CraftStatus: CraftStatus,
   RecentRewardStatus: RecentRewardStatus,
   GhostErrorCode: GhostErrorCode,
   GhostError: GhostError,

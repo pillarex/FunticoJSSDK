@@ -10,7 +10,7 @@ import { serverEncrypt } from '../helpers/crypto-oracle.mjs';
 import {
   PUB, PRIV, API, PLATFORM_TOKEN, JWT, USER_ID, PLATFORM_ID, RIVAL_ID, config,
   BALANCE, ROOM_A, ROOM_B, ROOM_C, ROOM_D, VOUCHERS, VOUCHERS_SPENT, LEADERS, TOURNAMENT_ID, TOURNAMENT_LEADERBOARD, TOURNAMENT_HISTORY,
-  CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession, GHOST_MATCH_ID,
+  CAMPAIGN_LEVELS, SAVED_STATE, SAVED_SESSION, gameSession, GHOST_MATCH_ID, GHOST_POOLS, GHOST_MATCH, GHOST_REPORT, ghostRun,
   GOAL_CHAIN_KEY, GOAL_ID, NEXT_GOAL_ID, GOAL_ATTEMPT_ID, GOAL_ATTEMPT, GOAL_ATTEMPT_START, COMMUNITY_GOAL_LIVE, communityGoal,
   COMMUNITY_GOAL_SETTLED, GOAL_STRIKE_ID,
 } from './wire.mjs';
@@ -905,6 +905,100 @@ export const SCENARIOS = [
 
   // -------------------------------------------------------------------------------------------
   {
+    name: 'Crafting: recipes mapping, craft/fuse outcomes, idempotency keys, cache drop, error codes',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', tokenConfig(mod));
+
+      const rules = await ctx.call('GetRecipes');
+      ctx.check(lastRequest(ctx).method === 'GET' && lastRequest(ctx).url.endsWith('/Inventory/recipes'), 'recipes url');
+      const [blueprint, bareRecipe] = rules.Recipes;
+      ctx.check(blueprint.HasId === true && blueprint.Inputs[0].Item === 'sg_shard_{id}' && blueprint.Outputs[0].Amount === 1, 'recipe mapped');
+      ctx.check(bareRecipe.Key === '' && bareRecipe.Name === null && bareRecipe.HasId === false && bareRecipe.Inputs.length === 0, 'null recipe fields defaulted');
+      ctx.check(bareRecipe.Outputs[0].Item === '' && bareRecipe.Outputs[0].Amount === 1, 'null line defaulted');
+      const [fusion, bareFusion] = rules.Fusions;
+      ctx.check(fusion.Need === 4 && fusion.Inputs.length === 2 && fusion.Results[0] === 'sg_module_c', 'fusion mapped');
+      ctx.check(bareFusion.Need === 0 && bareFusion.Inputs.length === 0 && bareFusion.Results.length === 0, 'null fusion fields defaulted');
+      ctx.route('GET /Inventory/recipes', json({}));
+      const none = await ctx.call('GetRecipes');
+      ctx.check(none.Recipes.length === 0 && none.Fusions.length === 0, 'missing lists become []');
+
+      // Succeeded with a generated key: both cached inventory scopes are dropped.
+      await ctx.call('GetInventory');
+      await ctx.call('GetInventory', true, true);
+      const crafted = await ctx.call('CraftItem', 'blueprint', 'laser_pulse');
+      ctx.check(lastRequest(ctx).method === 'POST' && lastRequest(ctx).url.endsWith('/Inventory/craft'), 'craft url');
+      ctx.check(lastRequest(ctx).headers['Content-Type'] === 'application/json', 'craft sends JSON');
+      ctx.check(lastBody(ctx).Recipe === 'blueprint' && lastBody(ctx).Id === 'laser_pulse', 'craft body');
+      ctx.check(crafted.IdempotencyKey.length === 36 && lastBody(ctx).IdempotencyKey === crafted.IdempotencyKey, 'generated key sent and returned');
+      ctx.check(crafted.Status === 'Succeeded' && crafted.Burned[0].UserItemIds.length === 5 && crafted.Granted[0].UserItemIds[0] === 2001, 'succeeded mapped');
+      ctx.check((await ctx.call('GetCachedInventory')) === null && (await ctx.call('GetCachedInventory', true)) === null, 'succeeded drops the cache');
+
+      const again = await ctx.call('CraftItem', 'blueprint', 'laser_pulse');
+      ctx.check(again.IdempotencyKey !== crafted.IdempotencyKey, 'a call without a key gets a new key');
+      await ctx.call('CraftItem', 'scrap_to_core', null, 'my-key:0001');
+      ctx.check(lastBody(ctx).Id === null && lastBody(ctx).IdempotencyKey === 'my-key:0001', 'own key passed, null id sent');
+      await ctx.call('CraftItem', 'scrap_to_core');
+      ctx.check(lastBody(ctx).Id === null && lastBody(ctx).IdempotencyKey.length === 36, 'defaults: null id, generated key');
+      await ctx.call('CraftItem', 'scrap_to_core', null, '');
+      ctx.check(lastBody(ctx).IdempotencyKey.length === 36, 'an empty key is replaced by a generated one');
+
+      // Replayed and missing fields.
+      ctx.route('POST /Inventory/craft', json({ Status: 'Succeeded', Replayed: true }));
+      const replayed = await ctx.call('CraftItem', 'blueprint', 'laser_pulse', 'my-key:0001');
+      ctx.check(replayed.Replayed === true && replayed.OperationId === '' && replayed.Burned.length === 0 && replayed.Granted.length === 0, 'replay with missing fields defaulted');
+      ctx.check(replayed.IdempotencyKey === 'my-key:0001', 'own key returned');
+
+      // Pending (202): the result carries the key for the retry, and the cache is dropped.
+      await ctx.call('GetInventory');
+      ctx.route('POST /Inventory/craft', json({ OperationId: 'c1a2b3c4-0000-4000-8000-000000000003', Status: 'Pending', Replayed: false, Burned: [], Granted: [], Reason: null, Message: null }, 202));
+      const pending = await ctx.call('CraftItem', 'blueprint', 'laser_pulse');
+      ctx.check(pending.Status === 'Pending', 'pending resolves');
+      ctx.check((await ctx.call('GetCachedInventory')) === null, 'pending drops the cache');
+      await ctx.call('CraftItem', 'blueprint', 'laser_pulse', pending.IdempotencyKey);
+      ctx.check(lastBody(ctx).IdempotencyKey === pending.IdempotencyKey, 'retry carries the same key');
+
+      // Refused (422 with Status): resolves, nothing dropped.
+      await ctx.call('GetInventory');
+      ctx.route('POST /Inventory/craft', json({ OperationId: 'c1a2b3c4-0000-4000-8000-000000000004', Status: 'Refused', Replayed: false, Burned: null, Granted: null, Reason: 'not_enough_items', Message: 'Need 5, have 3' }, 422));
+      const refused = await ctx.call('CraftItem', 'blueprint', 'laser_pulse');
+      ctx.check(refused.Status === 'Refused' && refused.Reason === 'not_enough_items' && refused.Burned.length === 0, 'refused resolves');
+      ctx.check((await ctx.call('GetCachedInventory')) !== null, 'refused keeps the cache');
+
+      // Fuse.
+      const fused = await ctx.call('FuseItems', 'rare_to_epic', [101, 102, 103, 104]);
+      ctx.check(lastRequest(ctx).method === 'POST' && lastRequest(ctx).url.endsWith('/Inventory/fuse'), 'fuse url');
+      ctx.check(lastBody(ctx).Fusion === 'rare_to_epic' && lastBody(ctx).UserItemIds.length === 4 && lastBody(ctx).IdempotencyKey === fused.IdempotencyKey, 'fuse body');
+      ctx.check(fused.Status === 'Succeeded' && fused.Burned.length === 2 && fused.Granted[0].GameItemId === 'sg_module_c', 'fuse mapped');
+      ctx.check((await ctx.call('GetCachedInventory')) === null, 'fuse drops the cache');
+      await ctx.call('FuseItems', 'rare_to_epic', null, 'fuse-key-0001');
+      ctx.check(lastBody(ctx).UserItemIds.length === 0 && lastBody(ctx).IdempotencyKey === 'fuse-key-0001', 'null copies sent as []');
+
+      // Everything else rejects with an InventoryError carrying the code.
+      const errors = [
+        ['InvalidRequest', 400], ['UnknownRule', 404], ['KeyReused', 409], ['WrongItems', 422],
+        ['Misconfigured', 500], ['ReloginRequired', 409], ['NotLinked', 400], ['PlatformUnavailable', 502], ['SomethingNew', 400],
+      ];
+      for (const [code, status] of errors) {
+        ctx.route('POST /Inventory/fuse', json({ Error: code, Message: `${code} detail` }, status));
+        await ctx.call('FuseItems', 'rare_to_epic', [101, 102, 103, 104]);
+        ctx.check(ctx.lastError()?.isInventoryError === true, `${code}: InventoryError thrown`);
+        ctx.check(ctx.lastError()?.code === (code === 'SomethingNew' ? 'Unknown' : code), `${code}: code mapped`);
+      }
+      for (const e of [json({ OperationId: 'x' }), text('not json', 422), text('', 401), text('Bad Gateway', 502), networkError()]) {
+        ctx.route('POST /Inventory/craft', e);
+        await ctx.call('CraftItem', 'blueprint', 'laser_pulse');
+        ctx.check(ctx.lastError() !== undefined, 'rejected');
+      }
+      ctx.check(ctx.lastError()?.isInventoryError === false, 'a network failure is not an InventoryError');
+      ctx.route('GET /Inventory/recipes', json({ Error: 'ReloginRequired', Message: 'Log in again' }, 409));
+      await ctx.call('GetRecipes');
+      ctx.check(ctx.lastError()?.code === 'ReloginRequired', 'recipes error code');
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
     name: 'Recent rewards: query, mapping, null defaults, error codes',
     async run(ctx) {
       const { mod } = ctx;
@@ -1028,6 +1122,61 @@ export const SCENARIOS = [
       ctx.route('GET /Ghost/run', json({}));
       const empty = await ctx.call('GetGhostRun', 'arena');
       ctx.check(empty.Run === null && empty.OpenMatch === null, 'missing run fields become null');
+    },
+  },
+
+  // -------------------------------------------------------------------------------------------
+  {
+    name: 'Ghost paid pools: entry on pools and runs, refund on abandon, payment error codes',
+    async run(ctx) {
+      const { mod } = ctx;
+      await ctx.call('Initialize', tokenConfig(mod));
+
+      // Answers without Entry (free pools): null.
+      const free = await ctx.call('GetGhostPools');
+      ctx.check(free[0].Entry === null && free[1].Entry === null, 'missing pool Entry becomes null');
+      const freeRun = await ctx.call('GetGhostRun', 'arena');
+      ctx.check(freeRun.Run.Entry === null, 'missing run Entry becomes null');
+
+      ctx.route('GET /Ghost/pools', json({
+        Pools: [
+          { ...GHOST_POOLS.Pools[0], Key: 'paid_arena', Entry: { Product: 'arena_run', Tier: 'default', DisplayPrice: '100' } },
+          { ...GHOST_POOLS.Pools[1], Entry: null },
+          { ...GHOST_POOLS.Pools[0], Key: 'paid_unpriced', Entry: { Product: 'arena_run', Tier: 'vip' } },
+        ],
+      }));
+      const pools = await ctx.call('GetGhostPools');
+      ctx.check(pools[0].Entry.Product === 'arena_run' && pools[0].Entry.Tier === 'default' && pools[0].Entry.DisplayPrice === '100', 'pool entry mapped');
+      ctx.check(pools[1].Entry === null && pools[2].Entry.DisplayPrice === null, 'free pool null, missing price null');
+
+      const charged = { Status: 'Charged', Amount: '100', BalanceAfter: '150' };
+      ctx.route('POST /Ghost/run/start', json({ Run: ghostRun({ Pool: 'paid_arena', Entry: charged }), OpenMatch: null }));
+      const started = await ctx.call('StartGhostRun', 'paid_arena');
+      ctx.check(started.Run.Entry.Status === 'Charged' && started.Run.Entry.Amount === '100' && started.Run.Entry.BalanceAfter === '150', 'run entry mapped');
+
+      ctx.route('POST /Ghost/find', json({ Match: GHOST_MATCH, Run: ghostRun({ Pool: 'paid_arena', Entry: { Status: 'Charged' } }), UploadedSnapshotId: null }));
+      const found = await ctx.call('FindGhostOpponent', 'paid_arena', { ShipSize: 3 });
+      ctx.check(found.Run.Entry.Status === 'Charged' && found.Run.Entry.Amount === null && found.Run.Entry.BalanceAfter === null, 'missing amounts become null');
+
+      ctx.route('POST /Ghost/report', json({ ...GHOST_REPORT, Run: ghostRun({ Pool: 'paid_arena', Round: 2, Fights: 1, Wins: 1, Entry: charged }) }));
+      const reported = await ctx.call('ReportGhostResult', GHOST_MATCH_ID, mod.GhostOutcome.Win);
+      ctx.check(reported.Run.Entry.Status === 'Charged', 'report run entry mapped');
+
+      ctx.route('POST /Ghost/run/abandon', json({
+        Run: ghostRun({ Pool: 'paid_arena', Status: 'Abandoned', FinishedAt: '2026-11-15T10:05:00Z', Entry: { Status: 'Refunded', Amount: '100', BalanceAfter: '250' } }),
+        OpenMatch: null,
+      }));
+      const abandoned = await ctx.call('AbandonGhostRun', 'paid_arena');
+      ctx.check(abandoned.Run.Entry.Status === 'Refunded' && abandoned.Run.Entry.BalanceAfter === '250', 'abandon before the first opponent refunds');
+
+      for (const code of ['InsufficientFunds', 'KycRequired', 'EntryUnavailable', 'PaymentPending', 'ReloginRequired']) {
+        ctx.route('POST /Ghost/run/start', json({ Error: code, Message: `${code} detail` }, 400));
+        await ctx.call('StartGhostRun', 'paid_arena');
+        ctx.check(ctx.lastError()?.isGhostError === true && ctx.lastError()?.code === mod.GhostErrorCode[code], `${code} mapped`);
+      }
+      ctx.route('POST /Ghost/find', json({ Error: 'PaymentPending', Message: 'Payment not confirmed yet' }, 400));
+      await ctx.call('FindGhostOpponent', 'paid_arena', { ShipSize: 3 });
+      ctx.check(ctx.lastError()?.code === mod.GhostErrorCode.PaymentPending, 'find rejects while the payment is pending');
     },
   },
 

@@ -89,6 +89,10 @@ const MUTANTS = [
   { what: 'practice salt id is the user id', find: 'PayloadKind.Practice, String(user.UserId)', replace: 'PayloadKind.Practice, String(user.PlatformId)' },
   { what: 'practice run id kept across a failed submit', find: 'if (this.practiceRunId === null) {', replace: 'if (true) {' },
   { what: 'empty ghost match data left out', find: 'matchData.length > 0 ? { MatchData: matchData }', replace: 'matchData.length >= 0 ? { MatchData: matchData }' },
+  { what: 'a 422 refusal resolves with the outcome', find: 'response.ok || response.status === 422', replace: 'response.ok' },
+  { what: 'a refused craft keeps the cached inventory', find: 'if (result.Status === CraftStatus.Succeeded || result.Status === CraftStatus.Pending) {', replace: 'if (true) {' },
+  { what: 'a ghost pool without an entry price shows null', find: 'DisplayPrice: pool.Entry.DisplayPrice ?? null', replace: "DisplayPrice: pool.Entry.DisplayPrice ?? '0'" },
+  { what: 'a ghost run entry without an amount shows null', find: 'Amount: entry.Amount ?? null', replace: "Amount: entry.Amount ?? '0'" },
 ];
 
 test('T2 mutation check: each behavioural mutant of the ESM dist is detected by some scenario', async () => {

@@ -331,6 +331,40 @@ export const INVENTORY_ALL = {
   ],
 };
 
+/** GET /Inventory/recipes: a recipe with {id}, one with every nullable field null, a fusion and a bare fusion. */
+export const RECIPES = {
+  Recipes: [
+    {
+      Key: 'blueprint', Name: 'Blueprint from 5 shards', HasId: true,
+      Inputs: [{ Item: 'sg_shard_{id}', Amount: 5 }], Outputs: [{ Item: 'sg_bp_{id}', Amount: 1 }],
+    },
+    { Key: null, Name: null, HasId: null, Inputs: null, Outputs: [{ Item: null, Amount: null }] },
+  ],
+  Fusions: [
+    {
+      Key: 'rare_to_epic', Name: '4 Rare into a random Epic', Need: 4,
+      Inputs: ['sg_module_a', 'sg_module_b'], Results: ['sg_module_c'],
+    },
+    { Key: 'bare', Name: null, Need: null, Inputs: null, Results: null },
+  ],
+};
+
+/** POST /Inventory/craft -> 200: the blueprint of laser_pulse made from 5 shards. */
+export const CRAFT_SUCCEEDED = {
+  OperationId: 'c1a2b3c4-0000-4000-8000-000000000001', Status: 'Succeeded', Replayed: false,
+  Burned: [{ GameItemId: 'sg_shard_laser_pulse', UserItemIds: [11, 12, 13, 14, 15] }],
+  Granted: [{ GameItemId: 'sg_bp_laser_pulse', UserItemIds: [2001] }],
+  Reason: null, Message: null,
+};
+
+/** POST /Inventory/fuse -> 200: 4 picked copies into one random result. */
+export const FUSE_SUCCEEDED = {
+  OperationId: 'c1a2b3c4-0000-4000-8000-000000000002', Status: 'Succeeded', Replayed: false,
+  Burned: [{ GameItemId: 'sg_module_a', UserItemIds: [101, 102] }, { GameItemId: 'sg_module_b', UserItemIds: [103, 104] }],
+  Granted: [{ GameItemId: 'sg_module_c', UserItemIds: [3001] }],
+  Reason: null, Message: null,
+};
+
 // ---- ghost matchmaking (PascalCase) -----------------------------------------------------------
 
 export const GHOST_MATCH_ID = '7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
@@ -671,6 +705,9 @@ export function defaultRoutes() {
     'POST /Campaign/complete-level': json(CAMPAIGN_COMPLETION),
 
     'GET /Inventory': req => json(req.url.searchParams.get('all') === 'true' ? INVENTORY_ALL : INVENTORY_GAME),
+    'GET /Inventory/recipes': json(RECIPES),
+    'POST /Inventory/craft': json(CRAFT_SUCCEEDED),
+    'POST /Inventory/fuse': json(FUSE_SUCCEEDED),
     'GET /Rewards/recent': json(RECENT_REWARDS),
 
     'GET /Ghost/pools': json(GHOST_POOLS),
