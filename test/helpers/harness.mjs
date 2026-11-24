@@ -127,24 +127,28 @@ export async function runScenario(impl, run, { routes = {}, coverage } = {}) {
   // Internal this.X() calls inside the SDK run on the real target and are NOT counted.
   const proxies = new WeakMap();
   const track = (cls, prop) => { if (coverage && typeof prop === 'string') coverage.add(`${cls}.${prop}`); };
-  const wrapInstance = target => {
+  const wrapInstance = (target, cls = 'FunticoSDK') => {
     if (!proxies.has(target)) {
       proxies.set(target, new Proxy(target, {
         get(t, prop) {
           const v = Reflect.get(t, prop, t);
-          if (typeof v === 'function') { track('FunticoSDK', prop); return v.bind(t); }
+          if (typeof v === 'function') { track(cls, prop); return v.bind(t); }
           return v;
         },
       }));
     }
     return proxies.get(target);
   };
+  // `new ctx.cls('X')(...)` returns an instance whose member calls are tracked as X.member.
   const wrapClass = (name) => new Proxy(mod[name], {
     get(t, prop) {
       if (name === 'FunticoSDK' && prop === 'Instance') { track(name, prop); return wrapInstance(t.Instance); }
       const v = Reflect.get(t, prop, t);
       if (typeof v === 'function' && prop !== 'prototype') { track(name, prop); return v.bind(t); }
       return v;
+    },
+    construct(t, args) {
+      return wrapInstance(Reflect.construct(t, args), name);
     },
   });
 

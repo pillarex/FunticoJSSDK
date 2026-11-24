@@ -83,7 +83,10 @@ const MUTANTS = [
   { what: 'session key derivation', find: 'substring(privateKey.length - 8)', replace: 'substring(privateKey.length - 9)' },
   { what: 'dead campaign attempt cleanup', find: 'attemptIsDead &&', replace: 'false &&' },
   { what: 'auth header name', find: '"Authorization": `Bearer ${this.jwtToken}`', replace: '"authorization": `Bearer ${this.jwtToken}`' },
-  { what: 'practice key from the decimal user id', find: "String(user.UserId).padStart(8, '0')", replace: "user.UserId.toString(16).padStart(8, '0')" },
+  { what: 'practice key from the decimal user id', find: "String(saltId).padStart(8, '0')", replace: "Number(saltId).toString(16).padStart(8, '0')" },
+  { what: 'an empty signer answer is not sent', find: 'signed.Data.length > 0', replace: 'signed.Data.length >= 0' },
+  { what: 'no X-Server-Key without a private key', find: 'if (this.config.privateGameKey) {', replace: 'if (true) {' },
+  { what: 'practice salt id is the user id', find: 'PayloadKind.Practice, String(user.UserId)', replace: 'PayloadKind.Practice, String(user.PlatformId)' },
   { what: 'practice run id kept across a failed submit', find: 'if (this.practiceRunId === null) {', replace: 'if (true) {' },
   { what: 'empty ghost match data left out', find: 'matchData.length > 0 ? { MatchData: matchData }', replace: 'matchData.length >= 0 ? { MatchData: matchData }' },
 ];

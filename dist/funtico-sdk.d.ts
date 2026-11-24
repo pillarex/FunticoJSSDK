@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 7e62156ff980) + src/FunticoClient.ts (sha256 8974316eadd4).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 5e12a71bdc60) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -223,6 +223,18 @@ export interface FunticoConfig {
      */
     funticoApiBaseUrl?: string;
     cacheTTL?: number;
+    /** Not used with privateGameKey: a game that signs on its server passes FunticoSignerConfig. */
+    payloadSigner?: undefined;
+}
+/**
+ * Initialize's config for a game that keeps its secret key off the client: the fields of
+ * FunticoConfig, with payloadSigner in place of privateGameKey.
+ */
+export interface FunticoSignerConfig extends Omit<FunticoConfig, 'privateGameKey' | 'payloadSigner'> {
+    /** Signs every result and encrypts the saved session; see PayloadSigner. */
+    payloadSigner: PayloadSigner;
+    /** Not used with a signer: leave it out. */
+    privateGameKey?: undefined;
 }
 /**
  * Detailed User Profile Data.
@@ -669,7 +681,8 @@ export declare enum CampaignLevelStatus {
  * All but two match the error identifiers the API returns, byte for byte. NoActiveAttempt is
  * CLIENT-side only - CompleteCampaignLevel throws it before any I/O when there is no attempt to
  * submit against. Unknown covers any body the SDK cannot parse and any identifier it does not
- * recognise (e.g. one added by a newer API version).
+ * recognise (e.g. one added by a newer API version), and a result the payload signer could not
+ * sign (nothing was sent; the attempt stays tracked).
  */
 export declare enum CampaignErrorCode {
     CampaignNotAvailable = "CampaignNotAvailable",
@@ -930,7 +943,7 @@ export declare enum GhostErrorCode {
     InvalidOutcome = "InvalidOutcome",
     /** The report's matchData is over 32 KB in UTF-8. Nothing was recorded and the match stays open: report again without it. */
     DataTooLarge = "DataTooLarge",
-    /** The response carried no recognisable code. */
+    /** The response carried no recognisable code, or the payload signer could not sign the report (nothing was sent). */
     Unknown = "Unknown"
 }
 /** Error thrown by the Ghost methods, carrying a machine-readable Code. `instanceof GhostError` is reliable. */
@@ -1118,7 +1131,7 @@ export declare enum CommunityGoalErrorCode {
     DataTooLarge = "DataTooLarge",
     /** No such best strike on this goal any more (the player has struck harder since, or was removed). */
     StrikeNotFound = "StrikeNotFound",
-    /** The response carried no recognisable code. */
+    /** The response carried no recognisable code, or the payload signer could not sign the result (nothing was sent). */
     Unknown = "Unknown"
 }
 /** Error thrown by the Community Goal methods. `instanceof CommunityGoalError` is reliable. */
@@ -1463,11 +1476,93 @@ export declare class CryptoHelper {
     static hmacSha256(message: string, keyStr: string): Promise<string>;
 }
 /**
+ * Which result is being signed. Each kind takes its key salt from a different id; see
+ * PayloadSigner.Sign.
+ */
+export declare enum PayloadKind {
+    /** CompletePractice. Salt id: the player's UserId. */
+    Practice = 0,
+    /** EndRoomSP. Salt id: the session or match id. */
+    Room = 1,
+    /** ResultTournament_Client. Salt id: the tournament's saveScoreId. */
+    Tournament = 2,
+    /** CompleteCampaignLevel. Salt id: the attempt id. */
+    Campaign = 3,
+    /** ReportGhostResult. Salt id: the match id, lowercased. */
+    Ghost = 4,
+    /** CompleteGoalAttempt. Salt id: the attempt id, lowercased. */
+    CommunityGoal = 5
+}
+/** A signed result, as the API expects it: the encrypted payload and its hash. */
+export interface SignedPayload {
+    Data: string;
+    Hash: string;
+}
+/**
+ * Signs the results the SDK sends and encrypts the saved session. When the game passes
+ * privateGameKey to Initialize, the SDK uses LocalPayloadSigner. A game that keeps the key off the
+ * client passes its own signer as FunticoSignerConfig.payloadSigner instead, typically one that
+ * forwards the call to the game's backend, where the key lives.
+ *
+ * Any signer must return exactly what LocalPayloadSigner returns for the same arguments and key;
+ * the API cannot tell them apart.
+ *
+ * Return null when the call fails. The SDK then sends nothing and rejects the call with an Error
+ * saying the result could not be signed (a CampaignError, GhostError or CommunityGoalError with
+ * Code Unknown in those modules), and keeps what a retry needs: the practice run id, the campaign
+ * attempt, the open session, the recorded events and counts. An exception thrown by a signer
+ * reaches the game's call unchanged.
+ */
+export interface PayloadSigner {
+    /**
+     * Encrypts and hashes a result.
+     * @param kind Which result this is.
+     * @param saltId The id the key salt comes from, unshortened: the player's UserId (decimal) for
+     *               Practice, otherwise the id named on the PayloadKind value.
+     * @param payloadJson The exact JSON to encrypt. Encrypt it as it is; never re-serialise it.
+     */
+    Sign(kind: PayloadKind, saltId: string, payloadJson: string): Promise<SignedPayload | null>;
+    /**
+     * Encrypts a session checkpoint (CreateSession_Client, UpdateSession_Client).
+     * @param userId The player's UserId (decimal).
+     * @param sessionJson The exact JSON to encrypt.
+     * @returns The encrypted session, or null on failure.
+     */
+    EncryptSession(userId: string, sessionJson: string): Promise<string | null>;
+    /**
+     * Decrypts a saved session (ReconnectToUnfinishedSession_Client).
+     * @param userId The player's UserId (decimal).
+     * @param encryptedData The session as the API returned it.
+     * @returns The session JSON, or null on failure.
+     */
+    DecryptSession(userId: string, encryptedData: string): Promise<string | null>;
+}
+/**
+ * Signs with the game's private key. The SDK uses it when Initialize gets privateGameKey. It is
+ * also the reference for every other PayloadSigner: a signer must return exactly what this one
+ * returns. It runs wherever Web Crypto does, so a Node backend can sign with it too.
+ */
+export declare class LocalPayloadSigner implements PayloadSigner {
+    private readonly privateKey;
+    constructor(privateKey: string);
+    /**
+     * The salt in front of the key: the first 8 characters of the id. A practice id is the player's
+     * UserId in decimal, padded on the left with zeros to 8 digits first.
+     */
+    static Salt(kind: PayloadKind, saltId: string): string;
+    Sign(kind: PayloadKind, saltId: string, payloadJson: string): Promise<SignedPayload>;
+    EncryptSession(userId: string, sessionJson: string): Promise<string>;
+    DecryptSession(userId: string, encryptedData: string): Promise<string>;
+    /** The player's UserId as 8 hex digits, then the last 8 characters of the private key. */
+    private sessionKey;
+}
+/**
  * Funtico SDK - Core Service Facade.
  */
 export declare class FunticoSDK {
     private static _instance;
     private config;
+    private payloadSigner;
     private jwtToken;
     private apiUri;
     /** The Funtico PLATFORM host (user profiles), not the game's Rooms API. See FunticoConfig. */
@@ -1518,8 +1613,11 @@ export declare class FunticoSDK {
      *
      * The config is validated first (see validateConfig); a rejected config throws before any state
      * is changed, so a previously initialized SDK keeps working with its old config.
+     *
+     * Results and the saved session are signed with config.privateGameKey, or, when the game keeps
+     * the key off the client, by config.payloadSigner.
      */
-    Initialize(config: FunticoConfig): Promise<void>;
+    Initialize(config: FunticoConfig | FunticoSignerConfig): Promise<void>;
     /**
      * Exchanges platform token for the game's JWT token.
      */
@@ -1531,15 +1629,22 @@ export declare class FunticoSDK {
      * Headers for the dedicated-server endpoints.
      *
      * These endpoints require BOTH headers: X-User-Key (the public key) and X-Server-Key, which is
-     * computed from the game keys. The private key itself is never sent.
+     * computed from the game keys. The private key itself is never sent. An SDK initialized with a
+     * payloadSigner has no key to compute it from and sends no X-Server-Key.
      *
      * Async because Web Crypto's sign() is.
      */
     private getServerHeaders;
     /**
-     * Derives the per-user key used to encrypt session payloads. Requires user data to be loaded.
+     * The player's UserId as the signer gets it for session encryption. Requires user data to be
+     * loaded.
      */
-    private getSessionEncryptionKey;
+    private getSessionUserId;
+    /**
+     * Signs a result with the game's signer. Null when the signer gave no usable answer; the caller
+     * then sends nothing and rejects as it would on a failed request. A signer's exception propagates.
+     */
+    private signResult;
     GetUserData(useCache?: boolean): Promise<UserData>;
     GetCachedUserData(): UserData | null;
     GetBalance(useCache?: boolean): Promise<BalanceResponse>;
@@ -1732,8 +1837,11 @@ export declare class FunticoSDK {
     /**
      * Ends a room session and sends the player's encrypted score to the game API (Client-side).
      *
-     * The score is encrypted and signed with privateGameKey. If this fails with HTTP 500 "Padding is
-     * invalid and cannot be removed", the privateGameKey is wrong.
+     * The score is encrypted and signed with privateGameKey (or by the payloadSigner). If this fails
+     * with HTTP 500 "Padding is invalid and cannot be removed", the privateGameKey is wrong.
+     *
+     * A failed submit, also one the signer could not sign, rejects and keeps the client session, its
+     * events and its counts, so a retry sends them again.
      */
     EndRoomSP(eventId: string, sessionOrMatchId: string, score: number, userId: number, ip?: string, gameEvents?: string[]): Promise<any>;
     /**
@@ -1775,8 +1883,9 @@ export declare class FunticoSDK {
      */
     ResultTournament_Client(tournamentId: string, saveScoreId: string, score: number, isSuccess: boolean, customData?: string): Promise<boolean>;
     /**
-     * Submits the result of a practice run, encrypted and signed with privateGameKey. Call it once,
-     * when the run is over. The result is ranked in the Hall of Fame as a Practice result.
+     * Submits the result of a practice run, encrypted and signed with privateGameKey (or by the
+     * payloadSigner). Call it once, when the run is over. The result is ranked in the Hall of Fame as
+     * a Practice result.
      *
      * What the run recorded goes with the result: the counts from RecordCollected_Client (keys your
      * game has opened for practice can pay rewards) and the events from RecordEvent_Client. Pass
@@ -2159,6 +2268,8 @@ export declare class FunticoSDK {
  *   privateGameKey: 'your-private-key',
  *   userToken
  * });
+ * // To keep the secret key on your own server, pass payloadSigner in place of privateGameKey
+ * // (see PayloadSigner).
  */
 export declare class FunticoClient {
     /** Event names. Keys and values are identical to FunticoPhaserPlugin.EVENTS. */
@@ -2202,7 +2313,7 @@ export declare class FunticoClient {
      * Unlike FunticoPhaserPlugin.init, errors are NOT swallowed: an invalid config or a failed
      * authentication rejects this promise with the original error and nothing is emitted.
      */
-    init(config: FunticoConfig): Promise<void>;
+    init(config: FunticoConfig | FunticoSignerConfig): Promise<void>;
     /** Exchanges a platform token for the game JWT (FunticoSDK.Authentication), then emits AUTHENTICATED(jwt). */
     login(platformToken: string): Promise<any>;
     /** Fetches the user profile (FunticoSDK.GetUserData), then emits USER_DATA_UPDATED(userData). */

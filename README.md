@@ -198,6 +198,8 @@ If you leave out `userToken`, authenticate later with `await funtico.login(platf
 - `privateGameKey` is the same as `publicGameKey`.
 - One key contains the other, which means the keys were concatenated or pasted into one field. Pass **only** the secret key from the Developer Portal in `privateGameKey`.
 
+A config with a `payloadSigner` (see [below](#keeping-the-secret-key-on-your-server-payload-signer)) leaves `privateGameKey` out, so only the `publicGameKey` rules apply to it. It is rejected when it also has a `privateGameKey`, or when the signer lacks one of `Sign`, `EncryptSession` and `DecryptSession`.
+
 The format is not checked beyond these rules. Legacy public keys are GUIDs, newer ones are URL-safe base64, and both are accepted. Error messages give key lengths but never the key values, so they are safe to log or send to an error tracker.
 
 ```js
@@ -214,11 +216,61 @@ try {
 }
 ```
 
-> **Security note: in a browser build, `privateGameKey` is a signing key, not a true secret.** The SDK uses it only locally, to encrypt and sign score and session payloads and to derive the `X-Server-Key` proof. It is never sent over the wire in plain form, and it never appears in SDK error messages. The client-side flows (the session checkpoint methods, `EndRoomSP`, `ResultTournament_Client` and `CompleteCampaignLevel`) run in the browser and need the key there, and `init()` rejects a config without it. So a browser or Mini App build must contain it, and anything bundled into client-side JavaScript can be extracted by a determined player, who could then sign payloads of their own. Treat it accordingly:
+> **Security note: in a browser build, `privateGameKey` is a signing key, not a true secret.** The SDK uses it only locally, to encrypt and sign score and session payloads and to derive the `X-Server-Key` proof. It is never sent over the wire in plain form, and it never appears in SDK error messages. The client-side flows (the session checkpoint methods, `EndRoomSP`, `ResultTournament_Client`, `CompletePractice`, `CompleteCampaignLevel`, `ReportGhostResult` and `CompleteGoalAttempt`) run in the browser and need it there. So a browser or Mini App build that is given the key contains it, and anything bundled into client-side JavaScript can be extracted by a determined player, who could then sign payloads of their own. Treat it accordingly:
+> - Better: leave it out of the client and sign on your server with a **payload signer** (next section).
 > - Keep it out of source control and logs. Injecting it at build time keeps it out of the repository, but it still ends up in the shipped bundle.
 > - Rotate it in the Developer Portal if it leaks, and never reuse it for anything that must stay server-only.
 > - Do not rely on it for anti-cheat guarantees; those need server-side validation.
-> - It stays truly secret only when the SDK runs on a trusted Node.js server, which is also where `ResultTournament_Server` belongs.
+> - It stays truly secret only on a trusted Node.js server, which is also where `ResultTournament_Server` belongs.
+
+### Keeping the Secret Key on Your Server (Payload Signer)
+
+Pass a **payload signer** in place of `privateGameKey`: an object the SDK hands each result and each session checkpoint to, and which asks your own backend to sign or encrypt it. Your backend holds the key and does exactly what the SDK would have done, so the client build never contains the key.
+
+```js
+import { FunticoClient, FunticoEnvironment, FunticoSDK } from './sdk/funtico-sdk.mjs';
+
+// Every signer call goes to your backend, authenticated with the player's game token.
+async function askBackend(body) {
+  const response = await fetch('https://your-backend.example/funtico-sign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${FunticoSDK.Instance.getUserToken()}` },
+    body: JSON.stringify(body)
+  });
+  return response.ok ? await response.json() : null; // null: the SDK sends nothing and the call rejects
+}
+
+const funtico = new FunticoClient();
+await funtico.init({
+  env: FunticoEnvironment.STAGING,
+  publicGameKey: 'your-public-key',
+  payloadSigner: { // in place of privateGameKey - pass one or the other, never both
+    Sign: (kind, saltId, payloadJson) => askBackend({ op: 'sign', kind, saltId, payloadJson }),
+    EncryptSession: (userId, sessionJson) => askBackend({ op: 'encryptSession', userId, data: sessionJson }),
+    DecryptSession: (userId, encryptedData) => askBackend({ op: 'decryptSession', userId, data: encryptedData })
+  },
+  userToken: 'token-from-funtico-platform'
+});
+```
+
+On the backend, `LocalPayloadSigner` is the reference: it is what the SDK itself uses when it is given the key, and your backend must return exactly what it returns. It needs nothing but Web Crypto, so this same package runs it on Node 20+:
+
+```js
+// Your backend (Node 20+). The key comes from the server's environment, never from a client.
+import { LocalPayloadSigner } from 'funtico-sdk-js';
+
+const local = new LocalPayloadSigner(process.env.FUNTICO_PRIVATE_KEY);
+// op 'sign'           -> await local.Sign(kind, saltId, payloadJson)   // { Data, Hash }
+// op 'encryptSession' -> await local.EncryptSession(userId, data)      // string
+// op 'decryptSession' -> await local.DecryptSession(userId, data)      // string
+```
+
+What your backend must do:
+- **Know who is asking.** Accept only calls with a valid player token, and find out whose token it is from Funtico (for example `GET /User/get-full-data` on the game API with that token as the bearer and your public key as `X-User-Key`, which is what `GetUserData` calls). Sign a `Practice` result, and encrypt or decrypt a session, only for that player's `UserId`, whatever the request says.
+- **Decide what to sign.** A signer signs whatever it is sent, so check each result before signing it (for example that the score is possible). Refuse a result with a non-2xx answer; the SDK then fails the call as on a network error.
+- **Sign the JSON as it arrives.** Never parse and re-serialise `payloadJson` before signing; any change in the bytes breaks the result.
+
+A signer that returns `null` makes the SDK send nothing: the call rejects, and what a retry needs is kept (the practice run id, the campaign attempt, the open session, the recorded events and counts). An exception thrown by the signer reaches your call unchanged. The server-only calls (`ResultTournament_Server`, `FinishRoomSession_Server`) still need the key, so run them on a trusted server initialized with `privateGameKey`. See [`PayloadSigner`](./USAGE.md#payloadsigner) in USAGE.md for every call, its kind and salt id, and what each call does when signing fails.
 
 ---
 
@@ -900,8 +952,13 @@ This means the **`privateGameKey` is wrong**: the server could not decrypt the s
 
 The typical cause is `privateGameKey` set to the public key and the secret key concatenated. The config validation catches that case (and a private key equal to the public key) at `init()`, with an `Invalid FunticoConfig` error. If you still get this 500 with a config that passes validation, the private key does not belong to this game or environment (for example a staging key used against PROD). Copy the secret key for the right game and environment from the Developer Portal again.
 
+With a `payloadSigner`, the same 500 means your backend signs with a wrong key or changes the payload before signing it: compare its answers with `LocalPayloadSigner`'s for the same arguments and the right key.
+
+### `... could not be signed, so it was not sent.` / `... could not be encrypted, so it was not saved.`
+Your `payloadSigner` returned `null`, an empty string, or a `SignedPayload` with an empty `Data` or `Hash`. Nothing reached the API, and what a retry needs is kept, so call the same method again once the signer works (check that your backend is reachable and accepts the player's token). The same goes for `... the saved session could not be decrypted.` from `ReconnectToUnfinishedSession_Client`. If the signer throws instead, your call rejects with the signer's own error, unchanged.
+
 ### `Failed to create client session`
-`CreateSession_Client` got a non-2xx response from `/Session/create-session`. The SDK discards the response body, so open the browser's Network tab and read the server's answer:
+(Without the `: the session could not be encrypted...` ending, which comes from a payload signer: see above.) `CreateSession_Client` got a non-2xx response from `/Session/create-session`. The SDK discards the response body, so open the browser's Network tab and read the server's answer:
 - HTTP 400 `Error with decrypt`: the server could not decrypt the checkpoint. This usually means the `privateGameKey` belongs to another game or environment (for example a staging key used against PROD). Copy the secret key again from the Developer Portal. `UpdateSession_Client` uses the same key and fails the same way (`Failed to update client session progress`).
 - HTTP 400 `Wrong Hash`: the payload was altered or not built by the SDK.
 - HTTP 401: the game JWT was missing or expired.

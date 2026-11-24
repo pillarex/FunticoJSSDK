@@ -4,6 +4,7 @@
 import {
   FunticoSDK,
   FunticoConfig,
+  FunticoSignerConfig,
   UserData,
   BalanceResponse,
   CampaignLevelsViewModel,
@@ -52,6 +53,8 @@ interface FunticoClientListener {
  *   privateGameKey: 'your-private-key',
  *   userToken
  * });
+ * // To keep the secret key on your own server, pass payloadSigner in place of privateGameKey
+ * // (see PayloadSigner).
  */
 export class FunticoClient {
   /** Event names. Keys and values are identical to FunticoPhaserPlugin.EVENTS. */
@@ -168,7 +171,7 @@ export class FunticoClient {
    * Unlike FunticoPhaserPlugin.init, errors are NOT swallowed: an invalid config or a failed
    * authentication rejects this promise with the original error and nothing is emitted.
    */
-  public async init(config: FunticoConfig): Promise<void> {
+  public async init(config: FunticoConfig | FunticoSignerConfig): Promise<void> {
     await this.sdk.Initialize(config);
     this.emit(FunticoClient.EVENTS.INITIALIZED);
 

@@ -1243,4 +1243,97 @@ export const SCENARIOS = [
       ctx.check(lastRequest(ctx).headers['X-User-Key'] === PUB && lastRequest(ctx).url.startsWith(API), 'old config still in use');
     },
   },
+
+  // -------------------------------------------------------------------------------------------
+  {
+    name: 'Payload signer: LocalPayloadSigner, keyless Initialize, failed and throwing signers, sessions, server headers',
+    async run(ctx) {
+      const { mod } = ctx;
+      const K = mod.PayloadKind;
+      const L = ctx.cls('LocalPayloadSigner');
+      for (const [kind, id] of [[K.Practice, '4242'], [K.Practice, '123456789'], [K.Room, 'sess-9f3a2b1c-0000'],
+        [K.Tournament, 'score-uuid-0001-aaaa'], [K.Campaign, 'attempt-0001'], [K.Ghost, GHOST_MATCH_ID], [K.CommunityGoal, GOAL_ATTEMPT_ID]]) {
+        await ctx.step(`Salt ${kind} ${id}`, () => L.Salt(kind, id));
+      }
+      const local = new L(PRIV);
+      await ctx.step('LocalPayloadSigner.Sign', () => local.Sign(K.Room, 'sess-9f3a2b1c-0000', '{"Score":1}'));
+      const blob = await ctx.step('LocalPayloadSigner.EncryptSession', () => local.EncryptSession(String(USER_ID), SAVED_STATE));
+      ctx.check(blob === SAVED_SESSION.Data, 'EncryptSession produces the saved-session blob');
+      ctx.check((await ctx.step('LocalPayloadSigner.DecryptSession', () => local.DecryptSession(String(USER_ID), blob))) === SAVED_STATE, 'DecryptSession restores it');
+
+      // The game's signer: signs with the same key, records every call, and fails on demand.
+      const calls = [];
+      let mode = 'sign';
+      const inner = new mod.LocalPayloadSigner(PRIV);
+      const answer = async (method, args) => {
+        calls.push([method, mode, ...args]);
+        if (mode === 'null') return null;
+        if (mode === 'empty') return method === 'Sign' ? { Data: '', Hash: 'h' } : '';
+        if (mode === 'throw') throw new Error('signer offline');
+        return inner[method](...args);
+      };
+      const signer = {
+        Sign: (...args) => answer('Sign', args),
+        EncryptSession: (...args) => answer('EncryptSession', args),
+        DecryptSession: (...args) => answer('DecryptSession', args),
+      };
+      const { privateGameKey, ...keyless } = tokenConfig(mod);
+      await ctx.call('Initialize', { ...keyless, payloadSigner: signer });
+      ctx.check(privateGameKey === PRIV && ctx.requests.length === 4, 'keyless config authenticates like a key config');
+
+      const sessionId = 'sess-9f3a2b1c-0000';
+      ctx.sdk.RecordEvent_Client('jump');
+      ctx.sdk.RecordCollected_Client('chest_1');
+      for (const failing of ['null', 'empty', 'throw']) {
+        mode = failing;
+        const before = ctx.requests.length;
+        await ctx.call('EndRoomSP', ROOM_A.id, sessionId, 10, USER_ID);
+        ctx.check(ctx.requests.length === before, `${failing}: nothing sent`);
+        await ctx.call('GetCurrentSessionEvents_Client');
+        await ctx.call('GetCurrentSessionCollected_Client');
+      }
+      mode = 'sign';
+      await ctx.call('EndRoomSP', ROOM_A.id, sessionId, 10, USER_ID);
+      ctx.check(lastRequest(ctx).url.includes('/Rooms/end-room-sp'), 'signed room result sent');
+
+      mode = 'null';
+      await ctx.call('ResultTournament_Client', TOURNAMENT_ID, 'score-uuid-0001-aaaa', 5, true);
+      await ctx.call('CompletePractice', 77);
+      await ctx.call('StartCampaignLevel', 'level-0002');
+      await ctx.call('CompleteCampaignLevel', { score: 1 });
+      ctx.check(ctx.lastError()?.isCampaignError && ctx.lastError().code === 'Unknown', 'campaign: CampaignError Unknown');
+      ctx.check(ctx.sdk.GetActiveCampaignAttempt() !== null, 'campaign attempt kept');
+      await ctx.call('ReportGhostResult', GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Win);
+      ctx.check(ctx.lastError()?.isGhostError && ctx.lastError().code === 'Unknown', 'ghost: GhostError Unknown');
+      await ctx.call('CompleteGoalAttempt', { AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID }, 3);
+      ctx.check(ctx.lastError()?.isCommunityGoalError && ctx.lastError().code === 'Unknown', 'goal: CommunityGoalError Unknown');
+      mode = 'sign';
+      await ctx.call('ResultTournament_Client', TOURNAMENT_ID, 'score-uuid-0001-aaaa', 5, true);
+      await ctx.call('CompletePractice', 77);
+      await ctx.call('CompleteCampaignLevel', { score: 1 });
+      await ctx.call('ReportGhostResult', GHOST_MATCH_ID.toUpperCase(), mod.GhostOutcome.Win);
+      await ctx.call('CompleteGoalAttempt', { AttemptId: GOAL_ATTEMPT_ID.toUpperCase(), GoalId: GOAL_ID }, 3);
+
+      // Sessions go through EncryptSession / DecryptSession.
+      mode = 'null';
+      await ctx.call('CreateSession_Client', '{"level":1}', mod.GameTypeEnum.Rooms, ROOM_A.id, 'sess-0007');
+      await ctx.call('ReconnectToUnfinishedSession_Client', SAVED_SESSION.Id);
+      await ctx.call('UpdateSession_Client', '{"level":2}');
+      ctx.check(/No active client session/.test(ctx.lastError()?.message), 'a failed reconnect restores nothing');
+      mode = 'sign';
+      ctx.check((await ctx.call('ReconnectToUnfinishedSession_Client', SAVED_SESSION.Id)) === SAVED_STATE, 'reconnect decrypted by the signer');
+      mode = 'empty';
+      await ctx.call('UpdateSession_Client', '{"level":2}');
+      mode = 'sign';
+      await ctx.call('UpdateSession_Client', '{"level":2}');
+      ctx.check(lastBody(ctx).Id === SAVED_SESSION.Id, 'the session survived the failed update');
+      await ctx.call('CreateSession_Client', '{"level":1}', mod.GameTypeEnum.Rooms, ROOM_A.id, 'sess-0007');
+
+      // Without a key there is no X-Server-Key.
+      await ctx.call('ResultTournament_Server', TOURNAMENT_ID, 'score-uuid-0001-aaaa', 50, PLATFORM_ID, true);
+      ctx.check(lastRequest(ctx).headers['X-Server-Key'] === undefined && lastRequest(ctx).headers['X-User-Key'] === PUB, 'no X-Server-Key');
+
+      ctx.record('signer calls', calls);
+    },
+  },
 ];
