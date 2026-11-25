@@ -39,8 +39,8 @@ The SDK covers rooms and tournament management, special tournaments, practice re
 
 The SDK is a set of prebuilt files in `dist/`. Each file stands alone and has no runtime dependencies. Get them in one of two ways:
 
-- **Copy the files:** download the [`dist/` folder of the latest release tag](https://github.com/pillarex/FunticoJSSDK/tree/v1.0.0/dist) (or of a clone of this repo) and put the files you need into your project, for example `public/sdk/` or `src/sdk/`.
-- **Install as a dependency:** `npm install github:pillarex/FunticoJSSDK#v1.0.0`, then import `funtico-sdk-js` (see [Loading in Node.js](#loading-in-nodejs-20) for how the two builds resolve).
+- **Copy the files:** download the [`dist/` folder on `main`](https://github.com/pillarex/FunticoJSSDK/tree/main/dist) (or of a clone of this repo) and put the files you need into your project, for example `public/sdk/` or `src/sdk/`.
+- **Install as a dependency:** `npm install github:pillarex/FunticoJSSDK`, then import `funtico-sdk-js` (see [Loading in Node.js](#loading-in-nodejs-20) for how the two builds resolve).
 
 | File | Format | Use it for |
 |---|---|---|
@@ -91,7 +91,7 @@ import { FunticoSDK, FunticoEnvironment } from './sdk/funtico-sdk.mjs';
 
 > **A copied `funtico-sdk.js` is CommonJS only if the nearest `package.json` has no `"type": "module"`.** Node decides how to load a `.js` file from the closest `package.json` above it, and `"type": "module"` is the default in Vite templates and many modern Node apps. In such a project the copied `funtico-sdk.js` loads as an ES module that exports nothing: `require('./sdk/funtico-sdk.js')` returns an empty object on current Node (every destructured name is `undefined`, and only the `globalThis.FunticoSDK` global is set) or throws `ERR_REQUIRE_ESM` on older Node, and TypeScript does not catch it. In an ESM project, import `funtico-sdk.mjs` instead, install the package from its path (below), or save the copies as `funtico-sdk.cjs` and `funtico-sdk.d.cts` before requiring them.
 
-The package is not published to the npm registry. To consume it as a dependency, install it straight from GitHub, pinned to a release tag: `npm install github:pillarex/FunticoJSSDK#v1.0.0` (or from a local checkout: `npm install ../FunticoJSSDK`). Then `import ... from 'funtico-sdk-js'` resolves to the ES module build and `require('funtico-sdk-js')` resolves to the CommonJS build, each with its own types. This works whatever the host project's `"type"` is. The two conditions load **two separate copies** of the SDK, so pick one module system for the whole program (see the callout below).
+The package is not published to the npm registry. To consume it as a dependency, install it straight from GitHub: `npm install github:pillarex/FunticoJSSDK` (or from a local checkout: `npm install ../FunticoJSSDK`). That installs `main`; to keep a version, pin a commit: `npm install github:pillarex/FunticoJSSDK#<commit>`. Then `import ... from 'funtico-sdk-js'` resolves to the ES module build and `require('funtico-sdk-js')` resolves to the CommonJS build, each with its own types. This works whatever the host project's `"type"` is. The two conditions load **two separate copies** of the SDK, so pick one module system for the whole program (see the callout below).
 
 ### TypeScript types
 
