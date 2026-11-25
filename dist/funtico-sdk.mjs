@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 ec5f21eeb292) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 7e45ae7c84ed) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -2879,7 +2879,8 @@ export class FunticoSDK {
         const wire = await response.json();
         return {
             ...wire, MilestonesCrossed: wire.MilestonesCrossed ?? [], NextGoalId: wire.NextGoalId ?? null, Place: wire.Place ?? null,
-            Best: wire.Best ?? 0, IsNewBest: wire.IsNewBest ?? false, PaidAttemptsLeftToday: wire.PaidAttemptsLeftToday ?? null
+            Best: wire.Best ?? 0, IsNewBest: wire.IsNewBest ?? false, PaidAttemptsLeftToday: wire.PaidAttemptsLeftToday ?? null,
+            Rewards: (wire.Rewards ?? []).map(reward => this.mapRecentReward(reward))
         };
     }
     /** Contributors ranked by score (ties: who got there first), the player's own row and the rows around it. */
@@ -3016,7 +3017,10 @@ export class FunticoSDK {
             ...wire,
             Chain: {
                 ...wire.Chain, Milestones: wire.Chain?.Milestones ?? [],
-                PaidAttempts: paid ? { ...paid, DisplayPrice: paid.DisplayPrice ?? null, PerDay: paid.PerDay ?? 0 } : null
+                PaidAttempts: paid ? {
+                    ...paid, DisplayPrice: paid.DisplayPrice ?? null, PerDay: paid.PerDay ?? 0,
+                    Rewards: (paid.Rewards ?? []).map(r => ({ OnPaidOfDay: r.OnPaidOfDay ?? null, Code: r.Code, ChancePct: r.ChancePct ?? 100 }))
+                } : null
             },
             Goal: this.mapCommunityGoal(wire.Goal),
             Me: me ? {
@@ -3030,7 +3034,10 @@ export class FunticoSDK {
     mapGoalAttempt(wire) {
         if (!wire)
             return null;
-        return { ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [], StartData: wire.StartData ?? null, Paid: wire.Paid ?? false };
+        return {
+            ...wire, MilestonesAtStart: wire.MilestonesAtStart ?? [], StartData: wire.StartData ?? null, Paid: wire.Paid ?? false,
+            PaidOfDay: wire.PaidOfDay ?? null
+        };
     }
     mapClosedBy(wire) {
         if (!wire)

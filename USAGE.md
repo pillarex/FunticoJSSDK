@@ -3613,7 +3613,7 @@ GetCommunityGoalById(goalId: string): Promise<CommunityGoalState>
 ```
 
 **CommunityGoalState Properties:**
-- `Chain` (`CommunityGoalChain`) - `Key`, `Name`, `Scoring`, `FreeAttemptsPerDay` (`0` = no limit), `MinAttemptSeconds`, `AttemptTtlSeconds`, `Milestones` (progress fractions such as `0.25`, `0.5`, `0.75`), `PaidAttempts` (`CommunityGoalPaidAttempts | null`: `Product`, `Tier`, `DisplayPrice` (the price in PLAYR as a decimal string, to show before buying; `null` when it is not on sale) and `PerDay` (`0` = no limit); `null` when the chain sells no paid attempts).
+- `Chain` (`CommunityGoalChain`) - `Key`, `Name`, `Scoring`, `FreeAttemptsPerDay` (`0` = no limit), `MinAttemptSeconds`, `AttemptTtlSeconds`, `Milestones` (progress fractions such as `0.25`, `0.5`, `0.75`), `PaidAttempts` (`CommunityGoalPaidAttempts | null`: `Product`, `Tier`, `DisplayPrice` (the price in PLAYR as a decimal string, to show before buying; `null` when it is not on sale) and `PerDay` (`0` = no limit) and `Rewards` (`CommunityGoalPaidReward[]`: what a completed paid attempt pays on top of its contribution, `{ OnPaidOfDay, Code, ChancePct }`; `OnPaidOfDay` is the n-th paid attempt of the day it applies to, `null` for every one; show for example "the 3rd paid strike today brings `chest_epic`"); `null` when the chain sells no paid attempts).
 - `Goal` (`CommunityGoal | null`) - The open goal (by chain key) or the requested one (by id). `null` only when the chain has never had a goal.
 - `AwaitingNext` (`boolean`) - No goal is open right now: the last one closed and the next one is not open yet. `Goal` then shows the last one.
 - `Me` (`CommunityGoalMe | null`) - `null` before sign-in.
@@ -3694,7 +3694,7 @@ StartGoalAttempt(goalId: string, options?: StartGoalAttemptOptions): Promise<Goa
 ```
 
 **Returns:** `GoalAttemptStart`:
-- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart`, `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in) `StartData` (what you passed as `options.startData`, unchanged; `null` if none) and `Paid` (`true` for a paid attempt). All of them are the same on every resume.
+- `Attempt` (`GoalAttempt`) - `AttemptId`, `GoalId`, `Seed` (a server-chosen random number for your game to use), `StartedAt`, `ExpiresAt`, `GoalValueAtStart`, `MilestonesAtStart` (the goal's value and passed milestones when the attempt started: the phase to play in) `StartData` (what you passed as `options.startData`, unchanged; `null` if none), `Paid` (`true` for a paid attempt) and `PaidOfDay` (a paid attempt: which paid attempt of the player's day it is, 1-based; `null` for a free one). All of them are the same on every resume.
 - `Resumed` (`boolean`) - `true` when the live attempt was returned again (nothing spent).
 - `Goal` (`CommunityGoal`) - The goal of the attempt, with its payload and its current state. On a resumed attempt the goal may have passed more milestones since the start; play in the phase of `Attempt.MilestonesAtStart`.
 - `AttemptsLeftToday`, `PaidAttemptsLeftToday`, `ResetsAt`.
@@ -3740,7 +3740,7 @@ CompleteGoalAttempt(attempt: Pick<GoalAttempt, 'AttemptId' | 'GoalId'>, contribu
 - `options.clientDurationSeconds`, `options.metrics` (up to 16 numbers), `options.fightHash` - Optional, for analytics and later checks.
 - `options.strikeData` - Optional, up to 16 KB in UTF-8: your own data of the strike, for example the build and what a replay needs. It travels signed with the result. The one of each player's best strike is kept and can be read back from the leaderboard with `GetCommunityGoalStrike`. Too long: `DataTooLarge`, nothing counted and the attempt stays open, so send it again without it.
 
-**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Best` (the player's best strike on this goal, this one included), `IsNewBest` (this contribution beat every earlier one of the player on this goal; the same on a replay), `Place`, `AttemptsLeftToday`, `PaidAttemptsLeftToday`, `ResetsAt` and `Replayed`.
+**Returns:** `GoalAttemptResult`: `Reported`, `Accepted` (what counted), `Capped`, `ValueBefore`, `ValueAfter`, `TargetValue`, `MilestonesCrossed` (milestones this contribution carried the goal past), `GoalStatus`, `GoalClosed`, `ClosedByMe` (this contribution reached the target), `NextGoalId`, `Score`, `ScoreImproved`, `Best` (the player's best strike on this goal, this one included), `IsNewBest` (this contribution beat every earlier one of the player on this goal; the same on a replay), `Place`, `AttemptsLeftToday`, `PaidAttemptsLeftToday`, `ResetsAt`, `Replayed` and `Rewards` (`RecentReward[]`: what a completed paid attempt paid on top of its contribution, such as a chest, each with its delivery status; empty for a free attempt; the same on a repeated completion. A chest arrives as a platform box, so show it by `Key`: its `Items` stay empty). A paid attempt that expires unfinished pays none of them.
 
 **Usage:**
 ```javascript

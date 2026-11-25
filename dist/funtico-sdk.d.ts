@@ -2,7 +2,7 @@
  * Funtico JS SDK v1.0.0
  *
  * GENERATED FILE - do not edit by hand.
- * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 ec5f21eeb292) + src/FunticoClient.ts (sha256 694498b0ae72).
+ * Source: upstream/phaser/FunticoPhaserSDK.ts (sha256 7e45ae7c84ed) + src/FunticoClient.ts (sha256 694498b0ae72).
  * Regenerate with: npm run build
  */
 /**
@@ -1346,6 +1346,17 @@ export interface CommunityGoalPaidAttempts {
     DisplayPrice: string | null;
     /** Paid attempts per player per UTC day across the whole chain; 0 means no limit. */
     PerDay: number;
+    /** What a completed paid attempt pays on top of its contribution (for example a chest on the third of the day). */
+    Rewards: CommunityGoalPaidReward[];
+}
+/** One reward of a chain's paid attempts. */
+export interface CommunityGoalPaidReward {
+    /** Only the player's n-th paid attempt of the UTC day (1 = the first); null = every paid attempt. */
+    OnPaidOfDay: number | null;
+    /** What it is, as the chain's rules name it (for example 'chest_epic'); the reward's Key once paid. */
+    Code: string;
+    /** Chance in percent that it pays; 100 = always. */
+    ChancePct: number;
 }
 /** The payment of one paid attempt. */
 export interface GoalAttemptEntry {
@@ -1434,6 +1445,8 @@ export interface GoalAttempt {
     StartData: string | null;
     /** True for a paid attempt. */
     Paid: boolean;
+    /** A paid attempt: the player's n-th paid attempt of its UTC day in the chain (1-based); null for a free one. */
+    PaidOfDay: number | null;
 }
 /** Who landed the hit that reached a goal's target. */
 export interface CommunityGoalClosedBy {
@@ -1596,6 +1609,11 @@ export interface GoalAttemptResult {
     /** Paid attempts left today; null when the chain sells none or has no limit on them. */
     PaidAttemptsLeftToday: number | null;
     ResetsAt: string;
+    /**
+     * A completed paid attempt: what it paid on top of its contribution (the chain's PaidAttempts.Rewards), each with its
+     * delivery status; empty for a free attempt or when it earned none. The same on a repeated completion.
+     */
+    Rewards: RecentReward[];
 }
 export interface CommunityGoalLeaderboardEntry {
     Place: number;
